@@ -5,6 +5,7 @@ import { metrics } from '../core/metrics.js'
 import { MemoryCache } from '../cache/memory-cache.js'
 import { Watchdog } from '../core/watchdog.js'
 import { app as modelsApp } from './models.js'
+import { app as chatsApp } from './chats.js'
 import { chatCompletions, chatCompletionsStop } from '../routes/chat.js'
 
 const app = new Hono()
@@ -38,6 +39,7 @@ app.use('/v1/*', async (c, next) => {
 })
 
 app.route('', modelsApp)
+app.route('', chatsApp)
 app.post('/v1/chat/completions', chatCompletions)
 app.post('/v1/chat/completions/stop', chatCompletionsStop)
 
@@ -49,6 +51,7 @@ app.get('/', (c) => {
       health: '/health',
       models: '/v1/models',
       chatCompletions: '/v1/chat/completions',
+      adaptaChats: '/v1/adapta/chats',
     },
   })
 })

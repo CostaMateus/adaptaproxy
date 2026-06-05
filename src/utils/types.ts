@@ -56,6 +56,10 @@ export interface OpenAIRequest {
   model: string;
   messages: Message[];
   stream?: boolean;
+  metadata?: {
+    adapta_chat_id?: string;
+    [key: string]: unknown;
+  };
   tools?: FunctionToolDefinition[];
   tool_choice?: ToolChoice;
   stream_options?: {

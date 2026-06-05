@@ -4,6 +4,7 @@ import { app } from '../api/server.ts'
 import {
   extractTextFromAdaptaPayload,
   openAiMessagesToPrompt,
+  prepareAdaptaPayload,
   replacePromptInPayload,
 } from '../services/adapta.ts'
 
@@ -60,6 +61,34 @@ test('extracts assistant text from common upstream payloads', () => {
   )
 })
 
+test('prepares Adapta payload with explicit chat and message ids', () => {
+  const prepared = prepareAdaptaPayload({
+    chatId: 'old-chat',
+    id: 'old-chat',
+    messages: [{
+      id: 'old-message',
+      role: 'user',
+      parts: [{ type: 'text', text: 'old' }],
+    }],
+    messageId: 'old-message',
+  }, 'new prompt', 'chat-1', 'message-1')
+
+  assert.deepEqual(prepared, {
+    chatId: 'chat-1',
+    messageId: 'message-1',
+    body: {
+      chatId: 'chat-1',
+      id: 'chat-1',
+      messages: [{
+        id: 'message-1',
+        role: 'user',
+        parts: [{ type: 'text', text: 'new prompt' }],
+      }],
+      messageId: 'message-1',
+    },
+  })
+})
+
 test('/v1/models returns adapta-chat', async () => {
   const response = await app.request('/v1/models')
   assert.equal(response.status, 200)
@@ -68,4 +97,28 @@ test('/v1/models returns adapta-chat', async () => {
   assert.equal(body.object, 'list')
   assert.equal(body.data[0].id, 'adapta-chat')
   assert.equal(body.data[0].owned_by, 'adapta')
+})
+
+test('/v1/adapta/chats creates, lists, reads, and deletes chat sessions', async () => {
+  const createResponse = await app.request('/v1/adapta/chats', {
+    method: 'POST',
+    body: JSON.stringify({ id: 'chat-test', title: 'Test chat' }),
+    headers: { 'Content-Type': 'application/json' },
+  })
+  assert.equal(createResponse.status, 201)
+
+  const created = await createResponse.json() as any
+  assert.equal(created.id, 'chat-test')
+  assert.equal(created.title, 'Test chat')
+
+  const listResponse = await app.request('/v1/adapta/chats')
+  const list = await listResponse.json() as any
+  assert.ok(list.data.some((chat: any) => chat.id === 'chat-test'))
+
+  const getResponse = await app.request('/v1/adapta/chats/chat-test')
+  assert.equal(getResponse.status, 200)
+
+  const deleteResponse = await app.request('/v1/adapta/chats/chat-test', { method: 'DELETE' })
+  const deleted = await deleteResponse.json() as any
+  assert.equal(deleted.deleted, true)
 })

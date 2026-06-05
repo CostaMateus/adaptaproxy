@@ -1,10 +1,13 @@
 import { config } from '../core/config.ts'
+import { newAdaptaMessageId, touchAdaptaChatSession } from '../core/chat-sessions.ts'
 import type { Message } from '../utils/types.ts'
 import { discoverAdaptaChatRequest, getAdaptaSessionHeaders, getCachedAdaptaChatRequest } from './playwright.ts'
 
 export interface AdaptaCompletion {
   content: string
   raw: unknown
+  chatId: string
+  messageId: string
 }
 
 export class AdaptaUpstreamError extends Error {
@@ -61,6 +64,67 @@ export function replacePromptInPayload(payload: unknown, prompt: string): unknow
     return { ...(replaced as Record<string, unknown>), message: prompt }
   }
   return { message: prompt }
+}
+
+export function prepareAdaptaPayload(payload: unknown, prompt: string, chatId: string, messageId = newAdaptaMessageId()): {
+  body: unknown
+  chatId: string
+  messageId: string
+} {
+  const body = replacePromptInPayload(payload, prompt)
+  const patched = replaceIdsInPayload(body, chatId, messageId)
+  return { body: patched, chatId, messageId }
+}
+
+function replaceIdsInPayload(payload: unknown, chatId: string, messageId: string): unknown {
+  if (Array.isArray(payload)) {
+    return payload.map(value => replaceIdsInPayload(value, chatId, messageId))
+  }
+  if (!payload || typeof payload !== 'object') return payload
+
+  const output: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(payload as Record<string, unknown>)) {
+    if (key === 'chatId' || key === 'id') {
+      output[key] = chatId
+      continue
+    }
+    if (key === 'messageId') {
+      output[key] = messageId
+      continue
+    }
+    if (key === 'messages' && Array.isArray(value)) {
+      output[key] = value.map(message => {
+        if (!message || typeof message !== 'object') return message
+        const record = { ...(message as Record<string, unknown>) }
+        if (record.role === 'user' || record.id) record.id = messageId
+        return replaceNestedIdsInMessage(record, chatId, messageId)
+      })
+      continue
+    }
+    output[key] = replaceIdsInPayload(value, chatId, messageId)
+  }
+  return output
+}
+
+function replaceNestedIdsInMessage(payload: unknown, chatId: string, messageId: string): unknown {
+  if (Array.isArray(payload)) {
+    return payload.map(value => replaceNestedIdsInMessage(value, chatId, messageId))
+  }
+  if (!payload || typeof payload !== 'object') return payload
+
+  const output: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(payload as Record<string, unknown>)) {
+    if (key === 'id' || key === 'messageId') {
+      output[key] = messageId
+      continue
+    }
+    if (key === 'chatId') {
+      output[key] = chatId
+      continue
+    }
+    output[key] = replaceNestedIdsInMessage(value, chatId, messageId)
+  }
+  return output
 }
 
 function replacePromptDeep(payload: unknown, prompt: string, state: { replaced: boolean }, key = ''): unknown {
@@ -199,10 +263,11 @@ export function extractTextFromSse(raw: string): string {
   return text
 }
 
-export async function createAdaptaCompletion(prompt: string): Promise<AdaptaCompletion> {
+export async function createAdaptaCompletion(prompt: string, requestedChatId?: string): Promise<AdaptaCompletion> {
   const captured = getCachedAdaptaChatRequest() ?? await discoverAdaptaChatRequest('__adaptaproxy_discovery__')
   const sessionHeaders = await getAdaptaSessionHeaders()
-  const body = replacePromptInPayload(captured.postData, prompt)
+  const session = touchAdaptaChatSession(requestedChatId || newAdaptaMessageId())
+  const prepared = prepareAdaptaPayload(captured.postData, prompt, session.id)
 
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), config.timeouts.chat)
@@ -214,7 +279,7 @@ export async function createAdaptaCompletion(prompt: string): Promise<AdaptaComp
         ...captured.headers,
         ...sessionHeaders,
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(prepared.body),
       signal: controller.signal,
     })
 
@@ -237,7 +302,7 @@ export async function createAdaptaCompletion(prompt: string): Promise<AdaptaComp
       )
     }
 
-    return { content, raw }
+    return { content, raw, chatId: prepared.chatId, messageId: prepared.messageId }
   } finally {
     clearTimeout(timeout)
   }

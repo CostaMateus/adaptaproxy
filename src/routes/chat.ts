@@ -10,7 +10,7 @@ function estimateTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4))
 }
 
-function completionPayload(id: string, model: string, content: string, prompt: string) {
+function completionPayload(id: string, model: string, content: string, prompt: string, adaptaChatId: string) {
   const promptTokens = estimateTokens(prompt)
   const completionTokens = estimateTokens(content)
 
@@ -34,6 +34,9 @@ function completionPayload(id: string, model: string, content: string, prompt: s
       total_tokens: promptTokens + completionTokens,
       prompt_tokens_details: { cached_tokens: 0 },
     },
+    metadata: {
+      adapta_chat_id: adaptaChatId,
+    },
   }
 }
 
@@ -48,11 +51,14 @@ export async function chatCompletions(c: Context) {
     }
 
     const prompt = openAiMessagesToPrompt(messages)
-    const completion = await createAdaptaCompletion(prompt)
+    const requestedChatId = typeof body.metadata?.adapta_chat_id === 'string'
+      ? body.metadata.adapta_chat_id
+      : undefined
+    const completion = await createAdaptaCompletion(prompt, requestedChatId)
     const completionId = 'chatcmpl-' + uuidv4()
 
     if (!body.stream) {
-      return c.json(completionPayload(completionId, model, completion.content, prompt))
+      return c.json(completionPayload(completionId, model, completion.content, prompt, completion.chatId))
     }
 
     c.header('Content-Type', 'text/event-stream')
@@ -70,6 +76,7 @@ export async function chatCompletions(c: Context) {
         object: 'chat.completion.chunk',
         created,
         model,
+        metadata: { adapta_chat_id: completion.chatId },
         choices: [{
           index: 0,
           delta: { role: 'assistant', content: '' },
@@ -84,6 +91,7 @@ export async function chatCompletions(c: Context) {
           object: 'chat.completion.chunk',
           created,
           model,
+          metadata: { adapta_chat_id: completion.chatId },
           choices: [{
             index: 0,
             delta: { content: chunk },
@@ -98,6 +106,7 @@ export async function chatCompletions(c: Context) {
         object: 'chat.completion.chunk',
         created,
         model,
+        metadata: { adapta_chat_id: completion.chatId },
         choices: [{
           index: 0,
           delta: {},
@@ -107,12 +116,13 @@ export async function chatCompletions(c: Context) {
       })
 
       if (body.stream_options?.include_usage) {
-        const payload = completionPayload(completionId, model, completion.content, prompt)
+        const payload = completionPayload(completionId, model, completion.content, prompt, completion.chatId)
         await writeEvent({
           id: completionId,
           object: 'chat.completion.chunk',
           created,
           model,
+          metadata: { adapta_chat_id: completion.chatId },
           choices: [],
           usage: payload.usage,
         })

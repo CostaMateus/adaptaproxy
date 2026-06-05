@@ -8,6 +8,10 @@ O v1 usa uma sessão persistente do Playwright. Você faz login manualmente uma 
 
 - `POST /v1/chat/completions`
 - `GET /v1/models`
+- `POST /v1/adapta/chats`
+- `GET /v1/adapta/chats`
+- `GET /v1/adapta/chats/:id`
+- `DELETE /v1/adapta/chats/:id`
 - modelo fixo `adapta-chat`
 - login manual via `npm run login`
 - streaming SSE simulado quando `stream: true`
@@ -87,6 +91,55 @@ curl http://localhost:3000/v1/chat/completions \
       { "role": "user", "content": "Ola" }
     ]
   }'
+```
+
+## Controle de chats
+
+Por padrão, cada chamada sem `metadata.adapta_chat_id` cria uma sessão local nova e retorna o ID usado:
+
+```json
+{
+  "model": "adapta-chat",
+  "messages": [
+    { "role": "user", "content": "Ola" }
+  ]
+}
+```
+
+A resposta inclui:
+
+```json
+{
+  "metadata": {
+    "adapta_chat_id": "..."
+  }
+}
+```
+
+Para continuar no mesmo chat, envie o ID em `metadata`:
+
+```json
+{
+  "model": "adapta-chat",
+  "metadata": {
+    "adapta_chat_id": "..."
+  },
+  "messages": [
+    { "role": "user", "content": "Continue a conversa anterior." }
+  ]
+}
+```
+
+Tambem existem APIs auxiliares para scripts e debug:
+
+```bash
+curl -X POST http://localhost:3000/v1/adapta/chats \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your_proxy_api_key" \
+  -d '{ "title": "Meu chat" }'
+
+curl http://localhost:3000/v1/adapta/chats \
+  -H "Authorization: Bearer your_proxy_api_key"
 ```
 
 ## Configuração
