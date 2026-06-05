@@ -20,6 +20,7 @@ let context: BrowserContext | null = null
 export let activePage: Page | null = null
 let cachedChatRequest: CapturedAdaptaRequest | null = null
 let cachedProjectFolders: AdaptaProjectFolder[] | null = null
+let cachedAuthorizationHeader: string | null = null
 
 export class Mutex {
   private queue: (() => void)[] = []
@@ -96,6 +97,52 @@ async function hasAuthState(page: Page): Promise<boolean> {
   return Boolean(await getLocalAuthValue(page))
 }
 
+async function captureAuthorizationHeader(page: Page): Promise<string> {
+  if (cachedAuthorizationHeader) return cachedAuthorizationHeader
+
+  const existingAuth = await waitForAuthorizationHeader(page, false)
+  if (existingAuth) return existingAuth
+
+  const authPromise = waitForAuthorizationHeader(page, true)
+  await page.goto(config.adapta.chatUrl, {
+    waitUntil: 'domcontentloaded',
+    timeout: config.timeouts.navigation,
+  }).catch(() => {})
+
+  return authPromise
+}
+
+async function waitForAuthorizationHeader(page: Page, wait: boolean): Promise<string> {
+  const capture = new Promise<string>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      page.off('request', onRequest)
+      if (wait) {
+        reject(new Error('Could not capture Adapta authorization header from the logged browser session. Run `npm run login` and authenticate again.'))
+      } else {
+        resolve('')
+      }
+    }, wait ? config.timeouts.navigation : 500)
+
+    const onRequest = (request: Request) => {
+      if (!request.url().startsWith(config.adapta.baseUrl)) return
+      const authorization = request.headers().authorization
+      if (!authorization) return
+
+      clearTimeout(timeout)
+      page.off('request', onRequest)
+      cachedAuthorizationHeader = authorization
+      resolve(authorization)
+    }
+
+    page.on('request', onRequest)
+  })
+
+  return capture.catch(error => {
+    if (wait) throw error
+    return ''
+  })
+}
+
 function parsePostData(request: Request): unknown {
   const raw = request.postData()
   if (!raw) return null
@@ -170,6 +217,34 @@ export function getCachedAdaptaChatRequest(): CapturedAdaptaRequest | null {
   return cachedChatRequest
 }
 
+export function getDefaultAdaptaChatRequest(): CapturedAdaptaRequest {
+  return {
+    url: `${config.adapta.baseUrl}/api/chat/stream/v1`,
+    method: 'POST',
+    headers: {
+      accept: 'text/event-stream, application/json, text/plain, */*',
+      'content-type': 'application/json',
+      origin: config.adapta.baseUrl,
+      referer: config.adapta.chatUrl,
+    },
+    postData: {
+      chatId: 'adaptaproxy-chat-id',
+      id: 'adaptaproxy-message-id',
+      trigger: 'submit-message',
+      isTemporaryChat: false,
+      messages: [{
+        id: 'adaptaproxy-message-id',
+        role: 'user',
+        content: '__adaptaproxy_prompt__',
+        parts: [{
+          type: 'text',
+          text: '__adaptaproxy_prompt__',
+        }],
+      }],
+    },
+  }
+}
+
 export async function getAdaptaProjectFolderByName(name: string): Promise<AdaptaProjectFolder | null> {
   const normalizedName = name.trim().toLowerCase()
   if (!normalizedName) return null
@@ -242,6 +317,7 @@ export async function closePlaywright(): Promise<void> {
   if (process.env.TEST_MOCK_PLAYWRIGHT) return
   cachedChatRequest = null
   cachedProjectFolders = null
+  cachedAuthorizationHeader = null
   await context?.close()
   context = null
   activePage = null
@@ -275,12 +351,17 @@ export async function getAdaptaSessionHeaders(): Promise<Record<string, string>>
   }
 
   if (cookieHeader) headers.cookie = cookieHeader
-  if (!cookieHeader && !localAuthValue) {
-    throw new Error('No Adapta session data found. Run `npm run login` and authenticate first.')
-  }
 
   if (localAuthValue && /^[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+$/.test(localAuthValue)) {
     headers.authorization = `Bearer ${localAuthValue}`
+  }
+
+  if (!headers.authorization) {
+    headers.authorization = await captureAuthorizationHeader(activePage)
+  }
+
+  if (!headers.authorization && !cookieHeader && !localAuthValue) {
+    throw new Error('No Adapta session data found. Run `npm run login` and authenticate first.')
   }
 
   return headers

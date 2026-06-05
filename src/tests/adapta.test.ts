@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { app } from '../api/server.ts'
+import { getDefaultAdaptaChatRequest } from '../services/playwright.ts'
 import {
   applyProjectFolderToPayload,
   extractTextFromAdaptaPayload,
@@ -126,6 +127,14 @@ test('prepares Adapta payload with explicit chat and message ids', () => {
       messageId: 'message-1',
     },
   })
+})
+
+test('default Adapta chat request does not create discovery chats', () => {
+  const request = getDefaultAdaptaChatRequest()
+  const serialized = JSON.stringify(request)
+
+  assert.equal(request.url.endsWith('/api/chat/stream/v1'), true)
+  assert.equal(serialized.includes('__adaptaproxy_discovery__'), false)
 })
 
 test('applies project folder id to Adapta payload', () => {

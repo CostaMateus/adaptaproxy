@@ -2,7 +2,7 @@ import { config } from '../core/config.ts'
 import { newAdaptaMessageId, touchAdaptaChatSession } from '../core/chat-sessions.ts'
 import type { Message } from '../utils/types.ts'
 import {
-  discoverAdaptaChatRequest,
+  getDefaultAdaptaChatRequest,
   getAdaptaProjectFolderByName,
   getAdaptaSessionHeaders,
   getCachedAdaptaChatRequest,
@@ -401,7 +401,7 @@ function dedupeQuestions(questions: AdaptaRefinementQuestion[]): AdaptaRefinemen
 }
 
 export async function createAdaptaCompletion(prompt: string, requestedChatId?: string): Promise<AdaptaCompletion> {
-  const captured = getCachedAdaptaChatRequest() ?? await discoverAdaptaChatRequest('__adaptaproxy_discovery__')
+  const captured = getCachedAdaptaChatRequest() ?? getDefaultAdaptaChatRequest()
   const sessionHeaders = await getAdaptaSessionHeaders()
   const session = touchAdaptaChatSession(requestedChatId || newAdaptaMessageId())
   const prepared = prepareAdaptaPayload(captured.postData, prompt, session.id)
