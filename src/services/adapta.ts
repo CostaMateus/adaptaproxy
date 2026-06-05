@@ -15,6 +15,13 @@ export interface AdaptaCompletion {
   messageId: string
 }
 
+export interface AdaptaStreamCompletion {
+  chatId: string
+  messageId: string
+  content: string
+  raw: string
+}
+
 export class AdaptaUpstreamError extends Error {
   readonly upstreamStatus: number
 
@@ -400,7 +407,14 @@ function dedupeQuestions(questions: AdaptaRefinementQuestion[]): AdaptaRefinemen
   })
 }
 
-export async function createAdaptaCompletion(prompt: string, requestedChatId?: string): Promise<AdaptaCompletion> {
+async function buildAdaptaRequest(prompt: string, requestedChatId?: string): Promise<{
+  url: string
+  method: string
+  headers: Record<string, string>
+  body: unknown
+  chatId: string
+  messageId: string
+}> {
   const captured = getCachedAdaptaChatRequest() ?? getDefaultAdaptaChatRequest()
   const sessionHeaders = await getAdaptaSessionHeaders()
   const session = touchAdaptaChatSession(requestedChatId || newAdaptaMessageId())
@@ -410,17 +424,29 @@ export async function createAdaptaCompletion(prompt: string, requestedChatId?: s
     ? applyProjectFolderToPayload(prepared.body, projectFolderId)
     : prepared.body
 
+  return {
+    url: captured.url,
+    method: captured.method,
+    headers: {
+      ...captured.headers,
+      ...sessionHeaders,
+    },
+    body: requestBody,
+    chatId: prepared.chatId,
+    messageId: prepared.messageId,
+  }
+}
+
+export async function createAdaptaCompletion(prompt: string, requestedChatId?: string): Promise<AdaptaCompletion> {
+  const request = await buildAdaptaRequest(prompt, requestedChatId)
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), config.timeouts.chat)
 
   try {
-    const response = await fetch(captured.url, {
-      method: captured.method,
-      headers: {
-        ...captured.headers,
-        ...sessionHeaders,
-      },
-      body: JSON.stringify(requestBody),
+    const response = await fetch(request.url, {
+      method: request.method,
+      headers: request.headers,
+      body: JSON.stringify(request.body),
       signal: controller.signal,
     })
 
@@ -443,10 +469,120 @@ export async function createAdaptaCompletion(prompt: string, requestedChatId?: s
       )
     }
 
-    return { content, raw, chatId: prepared.chatId, messageId: prepared.messageId }
+    return { content, raw, chatId: request.chatId, messageId: request.messageId }
   } finally {
     clearTimeout(timeout)
   }
+}
+
+export async function createAdaptaCompletionStream(
+  prompt: string,
+  requestedChatId: string | undefined,
+  onText: (chunk: string) => Promise<void> | void,
+): Promise<AdaptaStreamCompletion> {
+  const request = await buildAdaptaRequest(prompt, requestedChatId)
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), config.timeouts.chat)
+  let raw = ''
+  let content = ''
+
+  try {
+    const response = await fetch(request.url, {
+      method: request.method,
+      headers: request.headers,
+      body: JSON.stringify(request.body),
+      signal: controller.signal,
+    })
+
+    if (!response.ok) {
+      const rawText = await response.text()
+      throw new AdaptaUpstreamError(
+        `Adapta upstream error: ${response.status} ${response.statusText} - ${rawText.slice(0, 500)}`,
+        response.status,
+      )
+    }
+
+    if (!response.body) {
+      const rawText = await response.text()
+      const text = extractTextFromAdaptaPayload(rawText)
+      if (text) await onText(text)
+      return { content: text, raw: rawText, chatId: request.chatId, messageId: request.messageId }
+    }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      const decoded = decoder.decode(value, { stream: true })
+      raw += decoded
+      buffer += decoded
+
+      const lines = buffer.split(/\r?\n/)
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        const text = extractTextDeltaFromSseLine(line)
+        if (!text) continue
+        content += text
+        await onText(text)
+      }
+    }
+
+    const tail = decoder.decode()
+    if (tail) {
+      raw += tail
+      buffer += tail
+    }
+
+    if (buffer) {
+      const text = extractTextDeltaFromSseLine(buffer)
+      if (text) {
+        content += text
+        await onText(text)
+      }
+    }
+
+    if (!content) {
+      content = extractTextFromAdaptaPayload(raw)
+      if (content) await onText(content)
+    }
+
+    if (!content) {
+      throw new AdaptaUpstreamError(
+        `Adapta response did not contain recognizable assistant text: ${raw.slice(0, 500)}`,
+        502,
+      )
+    }
+
+    return { content, raw, chatId: request.chatId, messageId: request.messageId }
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+function extractTextDeltaFromSseLine(line: string): string {
+  const trimmed = line.trim()
+  if (!trimmed.startsWith('data:')) return ''
+
+  const data = trimmed.slice(5).trim()
+  if (!data || data === '[DONE]') return ''
+
+  try {
+    const event = JSON.parse(data)
+    if (event?.type === 'text-delta' && typeof event.delta === 'string') return event.delta
+    if (event?.type === 'text' && typeof event.text === 'string') return event.text
+    if (typeof event?.delta === 'string') return event.delta
+    if (typeof event?.text === 'string') return event.text
+    if (typeof event?.content === 'string') return event.content
+  } catch {
+    return ''
+  }
+
+  return ''
 }
 
 async function resolveProjectFolderId(): Promise<string | null> {

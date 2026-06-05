@@ -16,6 +16,16 @@ export interface AdaptaProjectFolder {
   name: string
 }
 
+export interface AdaptaSessionDiagnostics {
+  initialized: boolean
+  authenticated: boolean
+  authorizationCaptured: boolean
+  projectName: string | null
+  projectFound: boolean | null
+  projectId: string | null
+  currentUrl: string | null
+}
+
 let context: BrowserContext | null = null
 export let activePage: Page | null = null
 let cachedChatRequest: CapturedAdaptaRequest | null = null
@@ -48,6 +58,7 @@ export class Mutex {
 }
 
 const discoveryMutex = new Mutex()
+const pageOperationMutex = new Mutex()
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
 function getBrowser(browserType: BrowserType) {
@@ -100,16 +111,23 @@ async function hasAuthState(page: Page): Promise<boolean> {
 async function captureAuthorizationHeader(page: Page): Promise<string> {
   if (cachedAuthorizationHeader) return cachedAuthorizationHeader
 
-  const existingAuth = await waitForAuthorizationHeader(page, false)
-  if (existingAuth) return existingAuth
+  const release = await pageOperationMutex.acquire()
+  try {
+    const existingAuth = await waitForAuthorizationHeader(page, false)
+    if (existingAuth) return existingAuth
 
-  const authPromise = waitForAuthorizationHeader(page, true)
-  await page.goto(config.adapta.chatUrl, {
-    waitUntil: 'domcontentloaded',
-    timeout: config.timeouts.navigation,
-  }).catch(() => {})
+    const authPromise = waitForAuthorizationHeader(page, true)
+    await page.goto(config.adapta.chatUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: config.timeouts.navigation,
+    }).catch(error => {
+      if (!String(error?.message || error).includes('ERR_ABORTED')) throw error
+    })
 
-  return authPromise
+    return authPromise
+  } finally {
+    release()
+  }
 }
 
 async function waitForAuthorizationHeader(page: Page, wait: boolean): Promise<string> {
@@ -257,6 +275,10 @@ async function getAdaptaProjectFolders(): Promise<AdaptaProjectFolder[]> {
   if (cachedProjectFolders) return cachedProjectFolders
   if (!activePage) throw new Error('Playwright not initialized')
 
+  const release = await pageOperationMutex.acquire()
+  try {
+    if (cachedProjectFolders) return cachedProjectFolders
+
   const page = activePage
   const responsePromise = page.waitForResponse(response =>
     response.url().includes('/api/folders/v2') &&
@@ -279,6 +301,9 @@ async function getAdaptaProjectFolders(): Promise<AdaptaProjectFolder[]> {
 
   cachedProjectFolders = folders
   return folders
+  } finally {
+    release()
+  }
 }
 
 export async function initPlaywright(headless = true, browserType: BrowserType = 'chromium'): Promise<void> {
@@ -365,6 +390,47 @@ export async function getAdaptaSessionHeaders(): Promise<Record<string, string>>
   }
 
   return headers
+}
+
+export async function getAdaptaSessionDiagnostics(): Promise<AdaptaSessionDiagnostics> {
+  if (process.env.TEST_MOCK_PLAYWRIGHT) {
+    return {
+      initialized: true,
+      authenticated: true,
+      authorizationCaptured: true,
+      projectName: config.adapta.projectName || null,
+      projectFound: config.adapta.projectName ? true : null,
+      projectId: config.adapta.projectName ? 'mock-project' : null,
+      currentUrl: config.adapta.chatUrl,
+    }
+  }
+
+  const diagnostics: AdaptaSessionDiagnostics = {
+    initialized: Boolean(activePage),
+    authenticated: false,
+    authorizationCaptured: Boolean(cachedAuthorizationHeader),
+    projectName: config.adapta.projectName || null,
+    projectFound: config.adapta.projectName ? false : null,
+    projectId: null,
+    currentUrl: activePage?.url() || null,
+  }
+
+  if (!activePage) return diagnostics
+
+  diagnostics.authenticated = await hasValidSession().catch(() => false)
+  if (diagnostics.authenticated) {
+    const headers = await getAdaptaSessionHeaders().catch((): Record<string, string> => ({}))
+    diagnostics.authorizationCaptured = Boolean(headers.authorization)
+  }
+
+  if (config.adapta.projectName) {
+    const project = await getAdaptaProjectFolderByName(config.adapta.projectName).catch(() => null)
+    diagnostics.projectFound = Boolean(project)
+    diagnostics.projectId = project?.id || null
+  }
+
+  diagnostics.currentUrl = activePage.url()
+  return diagnostics
 }
 
 export async function launchManualLogin(browserType: BrowserType = 'chromium'): Promise<{ context: BrowserContext, page: Page }> {

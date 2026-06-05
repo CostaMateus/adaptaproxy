@@ -33,7 +33,7 @@ Thumbs.db
 
 # IDE / Editor
 .kilo
+.vscode
 
 # Legacy
 /core/
-

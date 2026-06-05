@@ -179,3 +179,20 @@ test('/v1/adapta/chats creates, lists, reads, and deletes chat sessions', async 
   const deleted = await deleteResponse.json() as any
   assert.equal(deleted.deleted, true)
 })
+
+test('/doctor reports mock Adapta diagnostics', async () => {
+  process.env.TEST_MOCK_PLAYWRIGHT = '1'
+  try {
+    const response = await app.request('/doctor')
+    assert.equal(response.status, 200)
+
+    const body = await response.json() as any
+    assert.notEqual(body.status, 'unhealthy')
+    assert.equal(body.adapta.playwrightInitialized, true)
+    assert.equal(body.adapta.authenticated, true)
+    assert.equal(body.adapta.authorizationCaptured, true)
+    assert.equal(typeof body.chats.persistedSessions, 'number')
+  } finally {
+    delete process.env.TEST_MOCK_PLAYWRIGHT
+  }
+})

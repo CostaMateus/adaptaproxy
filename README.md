@@ -14,8 +14,10 @@ O v1 usa uma sessão persistente do Playwright. Você faz login manualmente uma 
 - `DELETE /v1/adapta/chats/:id`
 - modelo fixo `adapta-chat`
 - login manual via `npm run login`
-- streaming SSE simulado quando `stream: true`
+- streaming SSE real quando `stream: true`
 - sessão única
+- sessões locais persistidas em arquivo
+- diagnóstico via `/doctor` e `npm run doctor`
 
 Ainda não há suporte para tools, anexos, reasoning, multi-conta, automação de login por email/senha ou cancelamento upstream.
 
@@ -57,7 +59,20 @@ Servidor padrão:
 http://localhost:3000
 ```
 
-Na primeira chamada de chat, se o endpoint interno da Adapta ainda não tiver sido descoberto, o Playwright tenta enviar uma mensagem curta pela UI e capturar a requisição real. Se isso falhar, envie uma mensagem manualmente na janela aberta e tente novamente.
+O servidor usa o endpoint interno conhecido da UI da Adapta e captura passivamente os headers de autenticação da sessão salva. Ele não envia mensagem de descoberta nem cria chats com `__adaptaproxy_discovery__`.
+
+## Diagnóstico
+
+```bash
+npm run doctor
+```
+
+O comando valida Playwright, sessão Adapta, captura de `Authorization`, projeto configurado e persistência local de chats. O mesmo relatório está disponível em:
+
+```text
+GET /doctor
+GET /health
+```
 
 ## Exemplo com OpenAI SDK
 
@@ -95,7 +110,7 @@ curl http://localhost:3000/v1/chat/completions \
 
 ## Controle de chats
 
-Por padrão, cada chamada sem `metadata.adapta_chat_id` cria uma sessão local nova e retorna o ID usado:
+Por padrão, cada chamada sem `metadata.adapta_chat_id` cria uma sessão local nova e retorna o ID usado. Essas sessões são persistidas em `CHAT_SESSIONS_FILE`, então sobrevivem a restart do servidor:
 
 ```json
 {
@@ -151,6 +166,7 @@ curl http://localhost:3000/v1/adapta/chats \
 | `API_KEY` | vazio | Chave opcional do proxy |
 | `HEADLESS` | `true` | Inicia Playwright sem janela ao rodar o servidor |
 | `USER_DATA_DIR` | `./adapta_profiles` | Perfil persistente do navegador |
+| `CHAT_SESSIONS_FILE` | `./adapta_profiles/chat-sessions.json` | Arquivo de sessões locais de chat |
 | `ADAPTA_BASE_URL` | `https://agent.adapta.one` | Origem da Adapta |
 | `ADAPTA_CHAT_URL` | `https://agent.adapta.one/agentic-chat` | Tela de chat usada para login e descoberta |
 | `ADAPTA_MODEL_ID` | `adapta-chat` | Modelo exposto em `/v1/models` |

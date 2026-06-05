@@ -58,13 +58,29 @@ app.get('/', (c) => {
 
 app.get('/health', async (c) => {
   const status = await watchdog?.getStatus()
+  const { buildDoctorReport } = await import('../core/doctor.ts')
+  const doctor = await buildDoctorReport()
   return c.json({
-    status: status?.overall || 'unknown',
+    status: doctor.status === 'ok' && status?.overall === 'healthy'
+      ? 'healthy'
+      : doctor.status === 'unhealthy' || status?.overall === 'unhealthy'
+        ? 'unhealthy'
+        : 'degraded',
     timestamp: Date.now(),
+    checks: doctor.checks,
+    adapta: doctor.adapta,
+    chats: doctor.chats,
     metrics: {
+      watchdog: status,
       cache: await cache?.getStats(),
     },
   })
+})
+
+app.get('/doctor', async (c) => {
+  const { buildDoctorReport } = await import('../core/doctor.ts')
+  const report = await buildDoctorReport()
+  return c.json(report, report.status === 'unhealthy' ? 503 : 200)
 })
 
 app.get('/metrics', (c) => {
