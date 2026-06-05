@@ -4,6 +4,7 @@ import { app } from '../api/server.ts'
 import {
   applyProjectFolderToPayload,
   extractTextFromAdaptaPayload,
+  formatRefinementQuestions,
   openAiMessagesToPrompt,
   prepareAdaptaPayload,
   replacePromptInPayload,
@@ -60,6 +61,43 @@ test('extracts assistant text from common upstream payloads', () => {
     extractTextFromAdaptaPayload('data: {"type":"text-delta","delta":"O"}\n\ndata: {"type":"text-delta","delta":"K"}\n\ndata: [DONE]\n\n'),
     'OK',
   )
+})
+
+test('formats Adapta refinement questions with options', () => {
+  const content = formatRefinementQuestions({
+    data: {
+      questions: [
+        {
+          question: 'Qual nivel de detalhe voce quer?',
+          options: [
+            { label: 'Resumo' },
+            { label: 'Detalhado' },
+          ],
+        },
+        {
+          title: 'Qual formato?',
+          choices: ['Lista', 'Tabela', 'Texto corrido'],
+        },
+      ],
+    },
+  })
+
+  assert.match(content, /A Adapta pediu refinamento/)
+  assert.match(content, /1\. Qual nivel de detalhe/)
+  assert.match(content, /A\. Resumo/)
+  assert.match(content, /2\. Qual formato/)
+  assert.match(content, /C\. Texto corrido/)
+})
+
+test('extracts Adapta refinement questions from SSE events', () => {
+  const content = extractTextFromAdaptaPayload([
+    'data: {"type":"form","payload":{"questions":[{"text":"Escolha o publico","options":["Tecnico","Executivo"]}]}}\n\n',
+    'data: [DONE]\n\n',
+  ].join(''))
+
+  assert.match(content, /Escolha o publico/)
+  assert.match(content, /A\. Tecnico/)
+  assert.match(content, /B\. Executivo/)
 })
 
 test('prepares Adapta payload with explicit chat and message ids', () => {

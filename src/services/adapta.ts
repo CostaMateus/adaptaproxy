@@ -248,11 +248,15 @@ export function extractTextFromAdaptaPayload(payload: unknown): string {
     if (text) return text
   }
 
+  const refinementText = formatRefinementQuestions(payload)
+  if (refinementText) return refinementText
+
   return ''
 }
 
 export function extractTextFromSse(raw: string): string {
   let text = ''
+  const events: unknown[] = []
 
   for (const line of raw.split(/\r?\n/)) {
     const trimmed = line.trim()
@@ -263,6 +267,7 @@ export function extractTextFromSse(raw: string): string {
 
     try {
       const event = JSON.parse(data)
+      events.push(event)
       if (event?.type === 'text-delta' && typeof event.delta === 'string') {
         text += event.delta
       } else if (event?.type === 'text' && typeof event.text === 'string') {
@@ -273,7 +278,126 @@ export function extractTextFromSse(raw: string): string {
     }
   }
 
-  return text
+  return text || formatRefinementQuestions(events)
+}
+
+export interface AdaptaRefinementQuestion {
+  question: string
+  options: string[]
+}
+
+export function formatRefinementQuestions(payload: unknown): string {
+  const questions = extractRefinementQuestions(payload)
+  if (!questions.length) return ''
+
+  const lines = [
+    'A Adapta pediu refinamento antes de responder. Escolha uma opcao para cada pergunta e envie a resposta neste mesmo chat.',
+    '',
+  ]
+
+  questions.forEach((item, questionIndex) => {
+    lines.push(`${questionIndex + 1}. ${item.question}`)
+    item.options.forEach((option, optionIndex) => {
+      lines.push(`   ${String.fromCharCode(65 + optionIndex)}. ${option}`)
+    })
+    lines.push('')
+  })
+
+  return lines.join('\n').trim()
+}
+
+export function extractRefinementQuestions(payload: unknown): AdaptaRefinementQuestion[] {
+  const seen = new Set<unknown>()
+  const output: AdaptaRefinementQuestion[] = []
+
+  function visit(value: unknown): void {
+    if (!value || typeof value !== 'object' || seen.has(value)) return
+    seen.add(value)
+
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item)
+      return
+    }
+
+    const record = value as Record<string, unknown>
+    const direct = questionFromRecord(record)
+    if (direct) output.push(direct)
+
+    for (const child of Object.values(record)) {
+      visit(child)
+    }
+  }
+
+  visit(payload)
+  return dedupeQuestions(output)
+}
+
+function questionFromRecord(record: Record<string, unknown>): AdaptaRefinementQuestion | null {
+  const options = extractOptionList(record)
+  if (options.length < 2) return null
+
+  const question = firstString(record, [
+    'question',
+    'pergunta',
+    'title',
+    'label',
+    'text',
+    'content',
+    'message',
+    'prompt',
+    'description',
+  ])
+  if (!question) return null
+
+  return { question, options }
+}
+
+function extractOptionList(record: Record<string, unknown>): string[] {
+  for (const key of ['options', 'choices', 'answers', 'suggestions', 'items']) {
+    const value = record[key]
+    if (!Array.isArray(value)) continue
+
+    const options = value
+      .map(optionToText)
+      .filter((option): option is string => Boolean(option))
+
+    if (options.length) return options
+  }
+
+  return []
+}
+
+function optionToText(value: unknown): string | null {
+  if (typeof value === 'string') return value.trim() || null
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+
+  return firstString(value as Record<string, unknown>, [
+    'label',
+    'title',
+    'text',
+    'content',
+    'value',
+    'name',
+    'description',
+  ])
+}
+
+function firstString(record: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = record[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return null
+}
+
+function dedupeQuestions(questions: AdaptaRefinementQuestion[]): AdaptaRefinementQuestion[] {
+  const seen = new Set<string>()
+  return questions.filter(item => {
+    const key = `${item.question}\n${item.options.join('\n')}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }
 
 export async function createAdaptaCompletion(prompt: string, requestedChatId?: string): Promise<AdaptaCompletion> {
