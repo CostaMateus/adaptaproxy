@@ -1,15 +1,22 @@
-/*
- * File: types.ts
- * Project: qwenproxy
- * Author: Pedro Farias
- * Created: 2026-05-09
- * 
- * Last Modified: Sat May 09 2026
- * Modified By: Pedro Farias
- */
+export interface JsonSchema {
+  type: string;
+  properties?: Record<string, JsonSchema>;
+  items?: JsonSchema;
+  required?: string[];
+  enum?: unknown[];
+  additionalProperties?: boolean | JsonSchema;
+  description?: string;
+}
 
-import type { JsonSchema, FunctionToolDefinition } from '../tools/types.ts';
-export type { JsonSchema, FunctionToolDefinition };
+export interface FunctionToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description?: string;
+    parameters?: JsonSchema;
+    strict?: boolean;
+  };
+}
 
 /** Tool choice options */
 export type ToolChoice = 'auto' | 'none' | 'required' | {

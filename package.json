@@ -1,7 +1,7 @@
 {
-  "name": "qwenproxy",
+  "name": "adaptaproxy",
   "version": "1.0.0",
-  "description": "",
+  "description": "OpenAI-compatible proxy for Adapta agentic chat",
   "main": "index.js",
   "scripts": {
     "start": "npx tsx src/index.ts",
@@ -16,7 +16,7 @@
     "typecheck": "tsc --noEmit"
   },
   "keywords": [],
-  "author": "Pedro Farias",
+  "author": "CostaMateus",
   "license": "ISC",
   "dependencies": {
     "@hono/node-server": "^2.0.3",

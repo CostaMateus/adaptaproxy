@@ -20,7 +20,7 @@ export class MemoryCache {
   private cleanupInterval: NodeJS.Timeout | null
 
   constructor(options?: { prefix?: string; defaultTTL?: number }) {
-    this.prefix = options?.prefix || 'qwenproxy:'
+    this.prefix = options?.prefix || 'adaptaproxy:'
     this.defaultTTL = options?.defaultTTL || config.cache.defaultTTL
     this.store = new Map()
     this.cleanupInterval = null

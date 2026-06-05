@@ -1,6 +1,6 @@
 /*
  * File: openai.ts
- * Project: qwenproxy
+ * Project: adaptaproxy
  * Unified OpenAI-compatible type definitions
  * Single source of truth for all message, tool, and response types.
  */

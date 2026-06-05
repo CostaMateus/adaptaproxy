@@ -4,7 +4,7 @@ const envSchema = z.object({
   PORT: z.string().default('3000'),
   HOST: z.string().default('0.0.0.0'),
   HEADLESS: z.string().default('true'),
-  USER_DATA_DIR: z.string().default('./qwen_profiles'),
+  USER_DATA_DIR: z.string().default('./adapta_profiles'),
   USER_AGENT: z.string().default('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'),
   LOG_CONSOLE: z.string().default('false'),
   NAVIGATION_TIMEOUT: z.string().default('30000'),
@@ -20,9 +20,9 @@ const envSchema = z.object({
   RAM_CRITICAL: z.string().default('95'),
   WS_WARNING: z.string().default('50'),
   WS_CRITICAL: z.string().default('100'),
-  QWEN_BASE_URL: z.string().default('https://chat.qwen.ai'),
-  QWEN_HTTP_ENDPOINT: z.string().default('https://api.qwen.ai/v1/chat'),
-  QWEN_API_KEY: z.string().default(''),
+  ADAPTA_BASE_URL: z.string().default('https://agent.adapta.one'),
+  ADAPTA_CHAT_URL: z.string().default('https://agent.adapta.one/agentic-chat'),
+  ADAPTA_MODEL_ID: z.string().default('adapta-chat'),
   API_KEY: z.string().default(''),
 })
 
@@ -79,10 +79,10 @@ export const config = {
     },
   },
   apiKey: env.API_KEY,
-  qwen: {
-    baseUrl: env.QWEN_BASE_URL,
-    httpEndpoint: env.QWEN_HTTP_ENDPOINT,
-    apiKey: env.QWEN_API_KEY,
+  adapta: {
+    baseUrl: env.ADAPTA_BASE_URL,
+    chatUrl: env.ADAPTA_CHAT_URL,
+    modelId: env.ADAPTA_MODEL_ID,
   },
 }
 

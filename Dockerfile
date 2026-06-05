@@ -13,11 +13,11 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY . .
 
 # Set permissions and switch to non-root user
-RUN mkdir -p /app/data /app/qwen_profiles && chown -R pwuser:pwuser /app
+RUN mkdir -p /app/data /app/adapta_profiles && chown -R pwuser:pwuser /app
 USER pwuser
 
 # Declare volumes for persistent data
-VOLUME ["/app/data", "/app/qwen_profiles"]
+VOLUME ["/app/data", "/app/adapta_profiles"]
 
 EXPOSE 3000
 ENV NODE_ENV=production PORT=3000

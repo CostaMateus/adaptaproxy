@@ -8,9 +8,6 @@ import { app as modelsApp } from './models.js'
 import { chatCompletions, chatCompletionsStop } from '../routes/chat.js'
 
 const app = new Hono()
-app.route('', modelsApp)
-app.post('/v1/chat/completions', chatCompletions)
-app.post('/v1/chat/completions/stop', chatCompletionsStop)
 
 let cache: MemoryCache
 let watchdog: Watchdog
@@ -38,6 +35,22 @@ app.use('/v1/*', async (c, next) => {
     }
   }
   await next()
+})
+
+app.route('', modelsApp)
+app.post('/v1/chat/completions', chatCompletions)
+app.post('/v1/chat/completions/stop', chatCompletionsStop)
+
+app.get('/', (c) => {
+  return c.json({
+    name: 'adaptaproxy',
+    status: 'ok',
+    endpoints: {
+      health: '/health',
+      models: '/v1/models',
+      chatCompletions: '/v1/chat/completions',
+    },
+  })
 })
 
 app.get('/health', async (c) => {
@@ -69,23 +82,8 @@ export async function startServer(): Promise<void> {
   cache = new MemoryCache()
   await cache.connect()
 
-  const { loadAccounts } = await import('../core/accounts.ts')
-  const accounts = loadAccounts()
-
-  if (accounts.length > 0) {
-    console.log(`[Server] Pre-warming ${accounts.length} configured account(s)...`)
-    const { initPlaywrightForAccount } = await import('../services/playwright.ts')
-    for (const account of accounts) {
-      try {
-        await initPlaywrightForAccount(account, config.browser.headless)
-      } catch (err: any) {
-        console.error(`[Server] Failed to initialize account ${account.email}:`, err.message)
-      }
-    }
-  } else {
-    const { initPlaywright } = await import('../services/playwright.ts')
-    await initPlaywright(config.browser.headless)
-  }
+  const { initPlaywright } = await import('../services/playwright.ts')
+  await initPlaywright(config.browser.headless)
 
   watchdog = new Watchdog()
   watchdog.start()
@@ -97,7 +95,9 @@ export async function startServer(): Promise<void> {
     port: config.server.port,
     hostname: config.server.host,
   }, (info) => {
+    const browserHost = info.address === '0.0.0.0' ? 'localhost' : info.address
     console.log(`Server listening on http://${info.address}:${info.port}`)
+    console.log(`Open http://${browserHost}:${info.port}`)
   })
 
   const shutdown = async (signal: string) => {
@@ -107,8 +107,6 @@ export async function startServer(): Promise<void> {
     await cache.close()
     const { closePlaywright } = await import('../services/playwright.js')
     await closePlaywright()
-    const { closeDatabase } = await import('../core/database.ts')
-    closeDatabase()
     server?.close()
     process.exit(0)
   }

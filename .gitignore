@@ -18,7 +18,7 @@ accounts.json
 accounts.json.bak
 
 # Browser profiles (session data)
-qwen_profiles/
+adapta_profiles/
 
 # Logs
 *.log

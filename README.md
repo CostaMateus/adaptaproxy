@@ -1,283 +1,122 @@
-# QwenProxy
+# Adaptaproxy
 
-Proxy API local compatível com OpenAI que roteia requisições para os modelos do **Qwen (chat.qwen.ai)** via automação de navegador com Playwright. Suporte a múltiplas contas com rotação automática, execução de ferramentas, modo de pensamento (reasoning), persistência de sessão e armazenamento em SQLite.
+Proxy local compatível com OpenAI para usar o chat da Adapta (`https://agent.adapta.one/agentic-chat`) via API.
 
-[![CI](https://github.com/pedrofariasx/qwenproxy/actions/workflows/ci.yml/badge.svg)](https://github.com/pedrofariasx/qwenproxy/actions/workflows/ci.yml)
-[![TypeScript](https://img.shields.io/badge/TypeScript-6.0-blue)](https://www.typescriptlang.org/)
-[![Hono](https://img.shields.io/badge/Hono-4.12-green)](https://hono.dev/)
-[![Playwright](https://img.shields.io/badge/Playwright-1.60-blueviolet)](https://playwright.dev/)
-[![License: ISC](https://img.shields.io/badge/License-ISC-yellow.svg)](LICENSE)
+O v1 usa uma sessão persistente do Playwright. Você faz login manualmente uma vez, o perfil fica salvo em `adapta_profiles/`, e o servidor reutiliza cookies/headers para enviar mensagens ao endpoint interno usado pela própria UI da Adapta.
 
----
+## Status do v1
 
-## Features
+- `POST /v1/chat/completions`
+- `GET /v1/models`
+- modelo fixo `adapta-chat`
+- login manual via `npm run login`
+- streaming SSE simulado quando `stream: true`
+- sessão única
 
-- **OpenAI API Compatible** — Interface compatível com `/v1/chat/completions` e `/v1/models`.
-- **Multi-Account** — Gerencie múltiplas contas Qwen com rotação round-robin e cooldown automático.
-- **SQLite Storage** — Contas salvas em banco de dados SQLite (WAL mode) para performance e confiabilidade.
-- **Reasoning Support** — Suporte completo ao modo de pensamento (thinking) dos modelos Qwen.
-- **Tool Execution** — Sistema de execução de ferramentas locais integrado ao fluxo do chat.
-- **Session Persistence** — Perfil de navegador persistente por conta em `qwen_profiles/`.
-- **Auto-Login** — Login automático via credenciais com recuperação de sessão.
-- **Browser Selection** — Escolha entre Chromium, Chrome, Firefox, Edge ou WebKit.
-- **Monitoring** — Health check, métricas Prometheus e watchdog integrados.
-- **Docker Ready** — Deploy para VPS com Docker, volumes persistentes e graceful shutdown.
-
----
-
-## Arquitetura
-
-```mermaid
-graph TD
-    Client[Cliente OpenAI/SDK] -->|HTTP| Proxy[QwenProxy - Hono]
-    Proxy -->|/v1/chat/completions| Handler[Chat Handler]
-    Proxy -->|/v1/models| Models[Models API]
-    Handler --> AccountMgr[Account Manager]
-    AccountMgr -->|Round-Robin| Accounts[(SQLite)]
-    AccountMgr --> Playwright[Playwright Service]
-    Playwright --> Browser1[Browser - Conta 1]
-    Playwright --> Browser2[Browser - Conta 2]
-    Playwright --> BrowserN[Browser - Conta N]
-    Handler --> QwenAPI[chat.qwen.ai]
-    Handler --> Tools[Tool Executor]
-
-    subgraph "Persistência"
-        Accounts
-        Profiles[qwen_profiles/]
-    end
-```
-
----
-
-## Pré-requisitos
-
-| Dependência | Versão Mínima | Instalação |
-|------------|--------------|-----------|
-| Node.js | v20.x | [nvm](https://github.com/nvm-sh/nvm) |
-| npm | v9.x | Incluído com Node.js |
-| Playwright | - | `npx playwright install` |
-| Docker (opcional) | v24.x | [Docker Docs](https://docs.docker.com/get-docker/) |
-
----
+Ainda não há suporte para tools, anexos, reasoning, multi-conta, automação de login por email/senha ou cancelamento upstream.
 
 ## Instalação
 
-### Via npm
-
 ```bash
-git clone https://github.com/pedrofariasx/qwenproxy.git
-cd qwenproxy
 npm install
-npx playwright install
+npx playwright install chromium
+cp .env.example .env
 ```
 
-### Via Docker
+Opcionalmente defina `API_KEY` no `.env`. Se definido, clientes precisam enviar `Authorization: Bearer <API_KEY>`.
+
+## Login manual
 
 ```bash
-docker-compose up -d
-```
-
----
-
-## Configuração
-
-Crie o arquivo `.env` na raiz do projeto (veja `.env.example`):
-
-```env
-# Porta do servidor (default: 3000)
-PORT=3000
-
-# Chave de API para proteger os endpoints (opcional)
-API_KEY=sua-chave-secreta-aqui
-
-# Credenciais Qwen para login automático (modo single-account)
-QWEN_EMAIL=seu-email@exemplo.com
-QWEN_PASSWORD=sua-senha-aqui
-
-# Navegador (chromium, firefox, chrome, edge)
-BROWSER=chromium
-```
-
----
-
-## Gerenciamento de Contas
-
-As contas são armazenadas em SQLite (`data/qwenproxy.db`). Use o CLI interativo para gerenciar:
-
-```bash
-# Abrir o gerenciador de contas
 npm run login
+```
 
-# Com navegador específico
-npm run login:firefox
+Uma janela do navegador será aberta em `https://agent.adapta.one/agentic-chat`. Faça login manualmente. O comando termina quando uma sessão autenticada é detectada e salva em `adapta_profiles/`.
+
+Também há variantes:
+
+```bash
 npm run login:chrome
+npm run login:firefox
 npm run login:edge
 ```
 
-O menu interativo permite:
-- **[A]** Adicionar conta com credenciais (email + senha)
-- **[M]** Adicionar conta via login manual no navegador
-- **[R]** Remover uma conta
-- **[L]** Login em todas as contas (inicializar sessões)
-
-> Na primeira execução, se existir um `accounts.json` antigo, as contas serão migradas automaticamente para SQLite.
-
----
-
-## Uso
-
-### Iniciar o servidor
+## Executar
 
 ```bash
-npm start                  # Chromium (padrão)
-npm run start:chrome       # Google Chrome
-npm run start:firefox      # Firefox
-npm run start:edge         # Microsoft Edge
+npm start
 ```
 
-O servidor inicia em `http://localhost:3000` com as seguintes rotas:
+Servidor padrão:
 
-| Rota | Método | Descrição |
-|------|--------|-----------|
-| `/v1/chat/completions` | POST | Chat completions (streaming + non-streaming) |
-| `/v1/chat/completions/stop` | POST | Abortar uma geração ativa |
-| `/v1/models` | GET | Listar modelos disponíveis |
-| `/v1/models/:model` | GET | Informações de um modelo específico |
-| `/health` | GET | Health check com status do sistema |
-| `/metrics` | GET | Métricas no formato Prometheus |
+```text
+http://localhost:3000
+```
 
----
+Na primeira chamada de chat, se o endpoint interno da Adapta ainda não tiver sido descoberto, o Playwright tenta enviar uma mensagem curta pela UI e capturar a requisição real. Se isso falhar, envie uma mensagem manualmente na janela aberta e tente novamente.
 
-## Exemplos de Integração
+## Exemplo com OpenAI SDK
 
-### OpenAI SDK (Node.js)
+```ts
+import OpenAI from 'openai'
 
-```typescript
-import OpenAI from 'openai';
-
-const openai = new OpenAI({
+const client = new OpenAI({
+  apiKey: process.env.API_KEY || 'local',
   baseURL: 'http://localhost:3000/v1',
-  apiKey: process.env.API_KEY || 'sk-no-key-required'
-});
+})
 
-const completion = await openai.chat.completions.create({
-  model: 'qwen-plus',
-  messages: [{ role: 'user', content: 'Explique como funciona o Playwright.' }]
-});
+const response = await client.chat.completions.create({
+  model: 'adapta-chat',
+  messages: [
+    { role: 'user', content: 'Explique o que e o Adaptaproxy.' },
+  ],
+})
 
-console.log(completion.choices[0].message.content);
+console.log(response.choices[0]?.message?.content)
 ```
 
-### cURL
+## Exemplo com cURL
 
 ```bash
 curl http://localhost:3000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer sua-chave" \
+  -H "Authorization: Bearer your_proxy_api_key" \
   -d '{
-    "model": "qwen-plus",
-    "messages": [{"role": "user", "content": "Hello!"}],
-    "stream": true
+    "model": "adapta-chat",
+    "messages": [
+      { "role": "user", "content": "Ola" }
+    ]
   }'
 ```
 
----
+## Configuração
 
-## Deploy com Docker
+| Variável | Padrão | Descrição |
+| --- | --- | --- |
+| `PORT` | `3000` | Porta HTTP |
+| `HOST` | `0.0.0.0` | Host HTTP |
+| `API_KEY` | vazio | Chave opcional do proxy |
+| `HEADLESS` | `true` | Inicia Playwright sem janela ao rodar o servidor |
+| `USER_DATA_DIR` | `./adapta_profiles` | Perfil persistente do navegador |
+| `ADAPTA_BASE_URL` | `https://agent.adapta.one` | Origem da Adapta |
+| `ADAPTA_CHAT_URL` | `https://agent.adapta.one/agentic-chat` | Tela de chat usada para login e descoberta |
+| `ADAPTA_MODEL_ID` | `adapta-chat` | Modelo exposto em `/v1/models` |
 
-### docker-compose.yml
+## Docker
 
-```yaml
-services:
-  qwenproxy:
-    build: .
-    container_name: qwenproxy
-    ports:
-      - "${PORT:-3000}:3000"
-    env_file:
-      - .env
-    volumes:
-      - ./data:/app/data               # Banco SQLite
-      - ./qwen_profiles:/app/qwen_profiles  # Sessões dos navegadores
-    restart: unless-stopped
+```bash
+docker compose up --build
 ```
 
-### Volumes persistentes
+Para login manual em Docker, prefira primeiro criar a sessão localmente com `npm run login` e montar `./adapta_profiles:/app/adapta_profiles`.
 
-| Volume | Conteúdo |
-|--------|----------|
-| `./data` | Banco SQLite com as contas (`qwenproxy.db`) |
-| `./qwen_profiles` | Perfis de navegador por conta (cookies, sessões) |
+## Testes
 
----
-
-## Estrutura do Projeto
-
-```
-qwenproxy/
-├── src/
-│   ├── index.ts                 # Entry point
-│   ├── login.ts                 # CLI de gerenciamento de contas
-│   ├── api/
-│   │   ├── server.ts            # Servidor Hono + startup
-│   │   └── models.ts            # Endpoints /v1/models
-│   ├── routes/
-│   │   └── chat.ts              # Handler /v1/chat/completions
-│   ├── services/
-│   │   ├── playwright.ts        # Automação de navegador
-│   │   └── qwen.ts              # Integração com API do Qwen
-│   ├── core/
-│   │   ├── accounts.ts          # CRUD de contas (SQLite)
-│   │   ├── account-manager.ts   # Rotação round-robin + cooldowns
-│   │   ├── database.ts          # Conexão e migrations SQLite
-│   │   ├── config.ts            # Configuração com Zod
-│   │   ├── logger.ts            # Logger estruturado
-│   │   ├── metrics.ts           # Coleta de métricas
-│   │   ├── model-registry.ts    # Registro de modelos e context windows
-│   │   ├── stream-registry.ts   # Tracking de streams ativos
-│   │   └── watchdog.ts          # Health monitoring
-│   ├── cache/
-│   │   └── memory-cache.ts      # Cache em memória com TTL
-│   ├── tools/
-│   │   ├── executor.ts          # Execução de ferramentas
-│   │   ├── registry.ts          # Registro de tools
-│   │   ├── parser.ts            # Parser de <tool_call> tags
-│   │   ├── schema.ts            # Validação JSON Schema
-│   │   └── types.ts             # Tipos do sistema de tools
-│   ├── utils/
-│   │   ├── json.ts              # Parser JSON robusto
-│   │   ├── context-truncation.ts # Truncamento de contexto
-│   │   └── types.ts             # Re-exports de tipos
-│   └── types/
-│       └── openai.ts            # Tipos compatíveis com OpenAI
-├── data/                        # Banco SQLite (gitignored)
-├── qwen_profiles/               # Perfis de navegador por conta (gitignored)
-├── Dockerfile
-├── docker-compose.yml
-└── package.json
+```bash
+npm run typecheck
+npm test
 ```
 
----
+## Observações
 
-## Troubleshooting
-
-| Problema | Solução |
-|----------|---------|
-| Porta em uso | Altere `PORT` no `.env` ou encerre o processo na porta 3000 |
-| Navegador não abre | Execute `npx playwright install` |
-| Sessão expirada | Execute `npm run login` para renovar cookies |
-| Rate limit em todas as contas | Adicione mais contas via `npm run login` |
-| Banco corrompido | Apague `data/qwenproxy.db` e re-adicione as contas |
-
----
-
-## Disclaimer
-
-> Este projeto é fornecido estritamente para fins educacionais e de pesquisa.
-
-Os autores não incentivam ou endossam:
-- Violação dos Termos de Serviço da plataforma Qwen.
-- Automação não autorizada em larga escala.
-- Uso para atividades maliciosas.
-
-**Use por sua conta e risco.**
+A Adapta não expõe aqui uma API pública documentada para esse chat. O Adaptaproxy depende de capturar e reaproveitar o endpoint interno usado pela UI. Mudanças na UI ou no contrato interno podem exigir ajuste no detector/payload.

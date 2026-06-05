@@ -1,6 +1,6 @@
 /*
  * File: json.ts
- * Project: qwenproxy
+ * Project: adaptaproxy
  * Robust JSON parsing utilities
  */
 
