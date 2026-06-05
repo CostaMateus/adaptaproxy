@@ -11,9 +11,15 @@ export interface CapturedAdaptaRequest {
   postData: unknown
 }
 
+export interface AdaptaProjectFolder {
+  id: string
+  name: string
+}
+
 let context: BrowserContext | null = null
 export let activePage: Page | null = null
 let cachedChatRequest: CapturedAdaptaRequest | null = null
+let cachedProjectFolders: AdaptaProjectFolder[] | null = null
 
 export class Mutex {
   private queue: (() => void)[] = []
@@ -112,6 +118,11 @@ function isLikelyChatRequest(request: Request): boolean {
   const data = request.postData() || ''
   const lowerData = data.toLowerCase()
 
+  if (lowerUrl.includes('/api/prompts/') ||
+      lowerUrl.includes('/prompts/enhance')) {
+    return false
+  }
+
   if (lowerUrl.includes('monitoring') ||
       lowerUrl.includes('telemetry') ||
       lowerUrl.includes('analytics') ||
@@ -119,6 +130,10 @@ function isLikelyChatRequest(request: Request): boolean {
       lowerUrl.includes('_vercel') ||
       lowerUrl.includes('insights')) {
     return false
+  }
+
+  if (lowerUrl.includes('/api/chat/stream')) {
+    return lowerData.includes('"messages"') && lowerData.includes('"trigger"')
   }
 
   const hasChatUrl = lowerUrl.includes('chat') ||
@@ -153,6 +168,42 @@ function normalizeHeaders(headers: Record<string, string>): Record<string, strin
 
 export function getCachedAdaptaChatRequest(): CapturedAdaptaRequest | null {
   return cachedChatRequest
+}
+
+export async function getAdaptaProjectFolderByName(name: string): Promise<AdaptaProjectFolder | null> {
+  const normalizedName = name.trim().toLowerCase()
+  if (!normalizedName) return null
+
+  const folders = await getAdaptaProjectFolders()
+  return folders.find(folder => folder.name.trim().toLowerCase() === normalizedName) || null
+}
+
+async function getAdaptaProjectFolders(): Promise<AdaptaProjectFolder[]> {
+  if (cachedProjectFolders) return cachedProjectFolders
+  if (!activePage) throw new Error('Playwright not initialized')
+
+  const page = activePage
+  const responsePromise = page.waitForResponse(response =>
+    response.url().includes('/api/folders/v2') &&
+    response.url().includes('type=CHATS') &&
+    response.status() === 200,
+  { timeout: config.timeouts.navigation })
+
+  await page.goto(config.adapta.chatUrl, {
+    waitUntil: 'domcontentloaded',
+    timeout: config.timeouts.navigation,
+  })
+
+  const response = await responsePromise
+  const payload = await response.json().catch(() => null) as any
+  const data = Array.isArray(payload?.data) ? payload.data : []
+
+  const folders = data
+    .filter((folder: any) => typeof folder?.id === 'string' && typeof folder?.name === 'string')
+    .map((folder: any) => ({ id: folder.id, name: folder.name }))
+
+  cachedProjectFolders = folders
+  return folders
 }
 
 export async function initPlaywright(headless = true, browserType: BrowserType = 'chromium'): Promise<void> {
@@ -190,6 +241,7 @@ export async function initPlaywright(headless = true, browserType: BrowserType =
 export async function closePlaywright(): Promise<void> {
   if (process.env.TEST_MOCK_PLAYWRIGHT) return
   cachedChatRequest = null
+  cachedProjectFolders = null
   await context?.close()
   context = null
   activePage = null
@@ -288,6 +340,10 @@ export async function discoverAdaptaChatRequest(prompt: string): Promise<Capture
     }
 
     const page = activePage
+    if (config.adapta.projectName) {
+      await selectProjectFolderInUi(page, config.adapta.projectName)
+    }
+
     let onRoute: ((route: Route, request: Request) => Promise<void>) | undefined
 
     const captured = new Promise<CapturedAdaptaRequest>((resolve, reject) => {
@@ -348,21 +404,6 @@ async function submitPromptThroughUi(page: Page, prompt: string): Promise<void> 
 
   await page.waitForTimeout(300)
 
-  const sendSelectors = [
-    'button[type="submit"]:visible',
-    'button[aria-label*="Send" i]:visible',
-    'button[aria-label*="Enviar" i]:visible',
-    '[data-testid*="send" i]:visible',
-  ]
-
-  for (const selector of sendSelectors) {
-    const button = await page.$(selector)
-    if (button && await button.isEnabled().catch(() => false)) {
-      await button.click()
-      return
-    }
-  }
-
   const box = await element?.boundingBox()
   if (box) {
     const clickedNearbyButton = await page.evaluate(({ x, y, width, height }) => {
@@ -398,4 +439,26 @@ async function submitPromptThroughUi(page: Page, prompt: string): Promise<void> 
   }
 
   await page.keyboard.press('Enter')
+}
+
+async function selectProjectFolderInUi(page: Page, projectName: string): Promise<void> {
+  const project = await getAdaptaProjectFolderByName(projectName)
+  if (!project) {
+    throw new Error(`Adapta project "${projectName}" was not found. Clear ADAPTA_PROJECT_NAME to use the default Chats menu.`)
+  }
+
+  await page.getByText(project.name, { exact: true }).click({
+    timeout: config.timeouts.page,
+    force: true,
+  }).catch(async () => {
+    await page.evaluate((name) => {
+      const candidates = Array.from(document.querySelectorAll('button, [role="button"], div, span'))
+        .filter(element => element.textContent?.trim() === name) as HTMLElement[]
+      candidates[0]?.click()
+    }, project.name)
+  })
+  await page.waitForURL(url => String(url).includes(`folderId=${project.id}`), {
+    timeout: config.timeouts.page,
+  }).catch(() => {})
+  await page.waitForTimeout(500)
 }

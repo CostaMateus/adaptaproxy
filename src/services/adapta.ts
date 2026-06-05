@@ -1,7 +1,12 @@
 import { config } from '../core/config.ts'
 import { newAdaptaMessageId, touchAdaptaChatSession } from '../core/chat-sessions.ts'
 import type { Message } from '../utils/types.ts'
-import { discoverAdaptaChatRequest, getAdaptaSessionHeaders, getCachedAdaptaChatRequest } from './playwright.ts'
+import {
+  discoverAdaptaChatRequest,
+  getAdaptaProjectFolderByName,
+  getAdaptaSessionHeaders,
+  getCachedAdaptaChatRequest,
+} from './playwright.ts'
 
 export interface AdaptaCompletion {
   content: string
@@ -74,6 +79,14 @@ export function prepareAdaptaPayload(payload: unknown, prompt: string, chatId: s
   const body = replacePromptInPayload(payload, prompt)
   const patched = replaceIdsInPayload(body, chatId, messageId)
   return { body: patched, chatId, messageId }
+}
+
+export function applyProjectFolderToPayload(payload: unknown, folderId: string): unknown {
+  if (!folderId || !payload || typeof payload !== 'object' || Array.isArray(payload)) return payload
+  return {
+    ...(payload as Record<string, unknown>),
+    folderId,
+  }
 }
 
 function replaceIdsInPayload(payload: unknown, chatId: string, messageId: string): unknown {
@@ -268,6 +281,10 @@ export async function createAdaptaCompletion(prompt: string, requestedChatId?: s
   const sessionHeaders = await getAdaptaSessionHeaders()
   const session = touchAdaptaChatSession(requestedChatId || newAdaptaMessageId())
   const prepared = prepareAdaptaPayload(captured.postData, prompt, session.id)
+  const projectFolderId = await resolveProjectFolderId()
+  const requestBody = projectFolderId
+    ? applyProjectFolderToPayload(prepared.body, projectFolderId)
+    : prepared.body
 
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), config.timeouts.chat)
@@ -279,7 +296,7 @@ export async function createAdaptaCompletion(prompt: string, requestedChatId?: s
         ...captured.headers,
         ...sessionHeaders,
       },
-      body: JSON.stringify(prepared.body),
+      body: JSON.stringify(requestBody),
       signal: controller.signal,
     })
 
@@ -306,4 +323,15 @@ export async function createAdaptaCompletion(prompt: string, requestedChatId?: s
   } finally {
     clearTimeout(timeout)
   }
+}
+
+async function resolveProjectFolderId(): Promise<string | null> {
+  if (!config.adapta.projectName) return null
+
+  const project = await getAdaptaProjectFolderByName(config.adapta.projectName)
+  if (!project) {
+    throw new Error(`Adapta project "${config.adapta.projectName}" was not found. Clear ADAPTA_PROJECT_NAME to use the default Chats menu.`)
+  }
+
+  return project.id
 }

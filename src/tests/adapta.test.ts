@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { app } from '../api/server.ts'
 import {
+  applyProjectFolderToPayload,
   extractTextFromAdaptaPayload,
   openAiMessagesToPrompt,
   prepareAdaptaPayload,
@@ -87,6 +88,15 @@ test('prepares Adapta payload with explicit chat and message ids', () => {
       messageId: 'message-1',
     },
   })
+})
+
+test('applies project folder id to Adapta payload', () => {
+  assert.deepEqual(
+    applyProjectFolderToPayload({ chatId: 'chat-1', messages: [] }, 'folder-1'),
+    { chatId: 'chat-1', messages: [], folderId: 'folder-1' },
+  )
+
+  assert.equal(applyProjectFolderToPayload(null, 'folder-1'), null)
 })
 
 test('/v1/models returns adapta-chat', async () => {

@@ -154,6 +154,15 @@ curl http://localhost:3000/v1/adapta/chats \
 | `ADAPTA_BASE_URL` | `https://agent.adapta.one` | Origem da Adapta |
 | `ADAPTA_CHAT_URL` | `https://agent.adapta.one/agentic-chat` | Tela de chat usada para login e descoberta |
 | `ADAPTA_MODEL_ID` | `adapta-chat` | Modelo exposto em `/v1/models` |
+| `ADAPTA_PROJECT_NAME` | vazio | Nome do projeto/pasta onde novos chats devem ser criados. Se vazio, usa o menu `CHATS` padrão |
+
+Para criar novos chats sempre dentro do projeto `nome_da_pasta`:
+
+```env
+ADAPTA_PROJECT_NAME=nome_da_pasta
+```
+
+Se o projeto configurado não existir na Adapta, o proxy retorna erro claro em vez de criar o chat fora da pasta.
 
 ## Docker
 

@@ -23,6 +23,7 @@ const envSchema = z.object({
   ADAPTA_BASE_URL: z.string().default('https://agent.adapta.one'),
   ADAPTA_CHAT_URL: z.string().default('https://agent.adapta.one/agentic-chat'),
   ADAPTA_MODEL_ID: z.string().default('adapta-chat'),
+  ADAPTA_PROJECT_NAME: z.string().default(''),
   API_KEY: z.string().default(''),
 })
 
@@ -83,6 +84,7 @@ export const config = {
     baseUrl: env.ADAPTA_BASE_URL,
     chatUrl: env.ADAPTA_CHAT_URL,
     modelId: env.ADAPTA_MODEL_ID,
+    projectName: env.ADAPTA_PROJECT_NAME.trim(),
   },
 }
 
