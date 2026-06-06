@@ -4,12 +4,14 @@ import { app } from '../api/server.ts'
 import { getDefaultAdaptaChatRequest } from '../services/playwright.ts'
 import {
   applyProjectFolderToPayload,
+  extractRefinementQuestionsFromAdaptaPayload,
   extractTextFromAdaptaPayload,
   formatRefinementQuestions,
   openAiMessagesToPrompt,
   prepareAdaptaPayload,
   replacePromptInPayload,
 } from '../services/adapta.ts'
+import { redactSecrets } from '../utils/redact.ts'
 
 test('converts OpenAI messages into an Adapta prompt', () => {
   const prompt = openAiMessagesToPrompt([
@@ -99,6 +101,25 @@ test('extracts Adapta refinement questions from SSE events', () => {
   assert.match(content, /Escolha o publico/)
   assert.match(content, /A\. Tecnico/)
   assert.match(content, /B\. Executivo/)
+})
+
+test('extracts structured Adapta refinement questions', () => {
+  const questions = extractRefinementQuestionsFromAdaptaPayload([
+    'data: {"type":"form","payload":{"questions":[{"text":"Escolha o publico","options":["Tecnico","Executivo"]}]}}\n\n',
+    'data: [DONE]\n\n',
+  ].join(''))
+
+  assert.deepEqual(questions, [{
+    question: 'Escolha o publico',
+    options: ['Tecnico', 'Executivo'],
+  }])
+})
+
+test('redacts auth secrets from logs and errors', () => {
+  const redacted = redactSecrets('authorization: Bearer abc.def.ghi cookie: token=secret api_key=local-secret')
+  assert.equal(redacted.includes('ghi'), false)
+  assert.equal(redacted.includes('secret'), false)
+  assert.match(redacted, /\[REDACTED\]/)
 })
 
 test('prepares Adapta payload with explicit chat and message ids', () => {

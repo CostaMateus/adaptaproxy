@@ -271,6 +271,18 @@ export async function getAdaptaProjectFolderByName(name: string): Promise<Adapta
   return folders.find(folder => folder.name.trim().toLowerCase() === normalizedName) || null
 }
 
+export async function getAdaptaProjectFolderById(id: string): Promise<AdaptaProjectFolder | null> {
+  const normalizedId = id.trim()
+  if (!normalizedId) return null
+
+  const folders = await getAdaptaProjectFolders()
+  return folders.find(folder => folder.id === normalizedId) || null
+}
+
+export async function listAdaptaProjectFolders(): Promise<AdaptaProjectFolder[]> {
+  return getAdaptaProjectFolders()
+}
+
 async function getAdaptaProjectFolders(): Promise<AdaptaProjectFolder[]> {
   if (cachedProjectFolders) return cachedProjectFolders
   if (!activePage) throw new Error('Playwright not initialized')

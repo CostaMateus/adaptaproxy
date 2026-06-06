@@ -19,6 +19,8 @@ accounts.json.bak
 
 # Browser profiles (session data)
 adapta_profiles/
+chat-sessions.json
+*.chat-sessions.json
 
 # Logs
 *.log

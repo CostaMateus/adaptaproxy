@@ -18,6 +18,9 @@ O v1 usa uma sessão persistente do Playwright. Você faz login manualmente uma 
 - sessão única
 - sessões locais persistidas em arquivo
 - diagnóstico via `/doctor` e `npm run doctor`
+- projeto padrão global ou por request via `metadata`
+- perguntas de refinamento em texto e em `metadata.adapta_refinement_questions`
+- listagem de chats reais da Adapta com `source=remote`
 
 Ainda não há suporte para tools, anexos, reasoning, multi-conta, automação de login por email/senha ou cancelamento upstream.
 
@@ -94,6 +97,28 @@ const response = await client.chat.completions.create({
 console.log(response.choices[0]?.message?.content)
 ```
 
+## VSCode / GitHub Copilot
+
+Configure o endpoint customizado apontando para:
+
+```text
+http://localhost:3000/v1
+```
+
+Use:
+
+```text
+model: adapta-chat
+apiKey: <API_KEY do .env>
+```
+
+Para clientes OpenAI-compatible como Continue, Cline/Roo Code e OpenAI SDK, a configuração geral é a mesma:
+
+```ts
+baseURL: 'http://localhost:3000/v1'
+model: 'adapta-chat'
+```
+
 ## Exemplo com cURL
 
 ```bash
@@ -145,6 +170,45 @@ Para continuar no mesmo chat, envie o ID em `metadata`:
 }
 ```
 
+Para direcionar uma chamada para outro projeto/pasta sem reiniciar o servidor, use:
+
+```json
+{
+  "model": "adapta-chat",
+  "metadata": {
+    "adapta_project_name": "PROJECT"
+  },
+  "messages": [
+    { "role": "user", "content": "Criar este chat no projeto PROJECT." }
+  ]
+}
+```
+
+Também é possível usar diretamente o ID da pasta:
+
+```json
+{
+  "metadata": {
+    "adapta_folder_id": "12345678-1234-1234-1234-123456789012"
+  }
+}
+```
+
+Se a Adapta pedir refinamento, o texto fica em `choices[0].message.content` e as perguntas também são expostas em:
+
+```json
+{
+  "metadata": {
+    "adapta_refinement_questions": [
+      {
+        "question": "Qual nivel de detalhe voce quer?",
+        "options": ["Resumo", "Detalhado"]
+      }
+    ]
+  }
+}
+```
+
 Tambem existem APIs auxiliares para scripts e debug:
 
 ```bash
@@ -156,6 +220,22 @@ curl -X POST http://localhost:3000/v1/adapta/chats \
 curl http://localhost:3000/v1/adapta/chats \
   -H "Authorization: Bearer your_proxy_api_key"
 ```
+
+Para listar chats reais da Adapta, use `source=remote`:
+
+```bash
+curl "http://localhost:3000/v1/adapta/chats?source=remote&projectName=CONSEN" \
+  -H "Authorization: Bearer your_proxy_api_key"
+```
+
+Para tentar excluir um chat real da Adapta:
+
+```bash
+curl -X DELETE "http://localhost:3000/v1/adapta/chats/<chat_id>?source=remote" \
+  -H "Authorization: Bearer your_proxy_api_key"
+```
+
+A exclusão remota depende do endpoint interno atual da Adapta. Se a UI mudar, o proxy retorna erro claro.
 
 ## Configuração
 
@@ -179,6 +259,14 @@ ADAPTA_PROJECT_NAME=nome_da_pasta
 ```
 
 Se o projeto configurado não existir na Adapta, o proxy retorna erro claro em vez de criar o chat fora da pasta.
+
+## Segurança
+
+- Não versione `.env`.
+- Não versione `adapta_profiles/`; ele contém sessão do navegador.
+- Não versione `CHAT_SESSIONS_FILE` se ele estiver fora de `adapta_profiles/`.
+- Logs e erros passam por redaction básica de `Authorization`, cookies, JWTs e API keys.
+- Use `API_KEY` quando expuser o proxy para qualquer cliente fora da máquina local.
 
 ## Docker
 

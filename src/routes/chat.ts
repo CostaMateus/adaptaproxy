@@ -5,12 +5,18 @@ import { config } from '../core/config.ts'
 import { metrics } from '../core/metrics.js'
 import { createAdaptaCompletion, createAdaptaCompletionStream, openAiMessagesToPrompt } from '../services/adapta.ts'
 import { OpenAIRequest } from '../utils/types.ts'
+import { redactSecrets } from '../utils/redact.ts'
+
+interface CompletionMetadata {
+  adapta_chat_id: string
+  adapta_refinement_questions?: unknown[]
+}
 
 function estimateTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4))
 }
 
-function completionPayload(id: string, model: string, content: string, prompt: string, adaptaChatId: string) {
+function completionPayload(id: string, model: string, content: string, prompt: string, metadata: CompletionMetadata) {
   const promptTokens = estimateTokens(prompt)
   const completionTokens = estimateTokens(content)
 
@@ -34,9 +40,7 @@ function completionPayload(id: string, model: string, content: string, prompt: s
       total_tokens: promptTokens + completionTokens,
       prompt_tokens_details: { cached_tokens: 0 },
     },
-    metadata: {
-      adapta_chat_id: adaptaChatId,
-    },
+    metadata,
   }
 }
 
@@ -54,11 +58,25 @@ export async function chatCompletions(c: Context) {
     const requestedChatId = typeof body.metadata?.adapta_chat_id === 'string'
       ? body.metadata.adapta_chat_id
       : undefined
+    const adaptaOptions = {
+      chatId: requestedChatId,
+      projectName: typeof body.metadata?.adapta_project_name === 'string'
+        ? body.metadata.adapta_project_name
+        : undefined,
+      folderId: typeof body.metadata?.adapta_folder_id === 'string'
+        ? body.metadata.adapta_folder_id
+        : undefined,
+    }
     const completionId = 'chatcmpl-' + uuidv4()
 
     if (!body.stream) {
-      const completion = await createAdaptaCompletion(prompt, requestedChatId)
-      return c.json(completionPayload(completionId, model, completion.content, prompt, completion.chatId))
+      const completion = await createAdaptaCompletion(prompt, adaptaOptions)
+      return c.json(completionPayload(completionId, model, completion.content, prompt, {
+        adapta_chat_id: completion.chatId,
+        ...(completion.refinementQuestions.length
+          ? { adapta_refinement_questions: completion.refinementQuestions }
+          : {}),
+      }))
     }
 
     c.header('Content-Type', 'text/event-stream')
@@ -87,7 +105,7 @@ export async function chatCompletions(c: Context) {
         }],
       })
 
-      const completion = await createAdaptaCompletionStream(prompt, requestedChatId, async chunk => {
+      const completion = await createAdaptaCompletionStream(prompt, adaptaOptions, async chunk => {
         streamedContent += chunk
         await writeEvent({
           id: completionId,
@@ -110,7 +128,12 @@ export async function chatCompletions(c: Context) {
         object: 'chat.completion.chunk',
         created,
         model,
-        metadata: { adapta_chat_id: completion.chatId },
+        metadata: {
+          adapta_chat_id: completion.chatId,
+          ...(completion.refinementQuestions.length
+            ? { adapta_refinement_questions: completion.refinementQuestions }
+            : {}),
+        },
         choices: [{
           index: 0,
           delta: {},
@@ -120,7 +143,12 @@ export async function chatCompletions(c: Context) {
       })
 
       if (body.stream_options?.include_usage) {
-        const payload = completionPayload(completionId, model, streamedContent || completion.content, prompt, completion.chatId)
+        const payload = completionPayload(completionId, model, streamedContent || completion.content, prompt, {
+          adapta_chat_id: completion.chatId,
+          ...(completion.refinementQuestions.length
+            ? { adapta_refinement_questions: completion.refinementQuestions }
+            : {}),
+        })
         await writeEvent({
           id: completionId,
           object: 'chat.completion.chunk',
@@ -135,19 +163,11 @@ export async function chatCompletions(c: Context) {
       await writer.write('data: [DONE]\n\n')
     })
   } catch (err: any) {
-    console.error('Error in chatCompletions:', err)
+    console.error('Error in chatCompletions:', redactSecrets(err))
     const status = err.upstreamStatus || 500
     if (status >= 500) metrics.increment('requests.errors')
-    return c.json({ error: { message: err.message } }, status)
+    return c.json({ error: { message: redactSecrets(err.message) } }, status)
   }
-}
-
-function splitForSse(content: string): string[] {
-  const chunks: string[] = []
-  for (let index = 0; index < content.length; index += 80) {
-    chunks.push(content.slice(index, index + 80))
-  }
-  return chunks.length ? chunks : ['']
 }
 
 export async function chatCompletionsStop(c: Context) {

@@ -3,16 +3,24 @@ import { newAdaptaMessageId, touchAdaptaChatSession } from '../core/chat-session
 import type { Message } from '../utils/types.ts'
 import {
   getDefaultAdaptaChatRequest,
+  getAdaptaProjectFolderById,
   getAdaptaProjectFolderByName,
   getAdaptaSessionHeaders,
   getCachedAdaptaChatRequest,
 } from './playwright.ts'
+
+export interface AdaptaRequestOptions {
+  chatId?: string
+  projectName?: string
+  folderId?: string
+}
 
 export interface AdaptaCompletion {
   content: string
   raw: unknown
   chatId: string
   messageId: string
+  refinementQuestions: AdaptaRefinementQuestion[]
 }
 
 export interface AdaptaStreamCompletion {
@@ -20,6 +28,7 @@ export interface AdaptaStreamCompletion {
   messageId: string
   content: string
   raw: string
+  refinementQuestions: AdaptaRefinementQuestion[]
 }
 
 export class AdaptaUpstreamError extends Error {
@@ -261,6 +270,11 @@ export function extractTextFromAdaptaPayload(payload: unknown): string {
   return ''
 }
 
+export function extractRefinementQuestionsFromAdaptaPayload(payload: unknown): AdaptaRefinementQuestion[] {
+  if (typeof payload === 'string') return extractRefinementQuestionsFromSse(payload)
+  return extractRefinementQuestions(payload)
+}
+
 export function extractTextFromSse(raw: string): string {
   let text = ''
   const events: unknown[] = []
@@ -286,6 +300,26 @@ export function extractTextFromSse(raw: string): string {
   }
 
   return text || formatRefinementQuestions(events)
+}
+
+export function extractRefinementQuestionsFromSse(raw: string): AdaptaRefinementQuestion[] {
+  const events: unknown[] = []
+
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('data:')) continue
+
+    const data = trimmed.slice(5).trim()
+    if (!data || data === '[DONE]') continue
+
+    try {
+      events.push(JSON.parse(data))
+    } catch {
+      // Ignore non-JSON SSE frames.
+    }
+  }
+
+  return extractRefinementQuestions(events)
 }
 
 export interface AdaptaRefinementQuestion {
@@ -407,7 +441,7 @@ function dedupeQuestions(questions: AdaptaRefinementQuestion[]): AdaptaRefinemen
   })
 }
 
-async function buildAdaptaRequest(prompt: string, requestedChatId?: string): Promise<{
+async function buildAdaptaRequest(prompt: string, options: AdaptaRequestOptions = {}): Promise<{
   url: string
   method: string
   headers: Record<string, string>
@@ -417,9 +451,9 @@ async function buildAdaptaRequest(prompt: string, requestedChatId?: string): Pro
 }> {
   const captured = getCachedAdaptaChatRequest() ?? getDefaultAdaptaChatRequest()
   const sessionHeaders = await getAdaptaSessionHeaders()
-  const session = touchAdaptaChatSession(requestedChatId || newAdaptaMessageId())
+  const session = touchAdaptaChatSession(options.chatId || newAdaptaMessageId())
   const prepared = prepareAdaptaPayload(captured.postData, prompt, session.id)
-  const projectFolderId = await resolveProjectFolderId()
+  const projectFolderId = await resolveProjectFolderId(options)
   const requestBody = projectFolderId
     ? applyProjectFolderToPayload(prepared.body, projectFolderId)
     : prepared.body
@@ -437,8 +471,8 @@ async function buildAdaptaRequest(prompt: string, requestedChatId?: string): Pro
   }
 }
 
-export async function createAdaptaCompletion(prompt: string, requestedChatId?: string): Promise<AdaptaCompletion> {
-  const request = await buildAdaptaRequest(prompt, requestedChatId)
+export async function createAdaptaCompletion(prompt: string, options: AdaptaRequestOptions = {}): Promise<AdaptaCompletion> {
+  const request = await buildAdaptaRequest(prompt, options)
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), config.timeouts.chat)
 
@@ -462,6 +496,7 @@ export async function createAdaptaCompletion(prompt: string, requestedChatId?: s
 
     const raw = contentType.includes('application/json') ? JSON.parse(rawText) : rawText
     const content = extractTextFromAdaptaPayload(raw)
+    const refinementQuestions = extractRefinementQuestionsFromAdaptaPayload(raw)
     if (!content) {
       throw new AdaptaUpstreamError(
         `Adapta response did not contain recognizable assistant text: ${rawText.slice(0, 500)}`,
@@ -469,7 +504,7 @@ export async function createAdaptaCompletion(prompt: string, requestedChatId?: s
       )
     }
 
-    return { content, raw, chatId: request.chatId, messageId: request.messageId }
+    return { content, raw, chatId: request.chatId, messageId: request.messageId, refinementQuestions }
   } finally {
     clearTimeout(timeout)
   }
@@ -477,10 +512,10 @@ export async function createAdaptaCompletion(prompt: string, requestedChatId?: s
 
 export async function createAdaptaCompletionStream(
   prompt: string,
-  requestedChatId: string | undefined,
+  options: AdaptaRequestOptions,
   onText: (chunk: string) => Promise<void> | void,
 ): Promise<AdaptaStreamCompletion> {
-  const request = await buildAdaptaRequest(prompt, requestedChatId)
+  const request = await buildAdaptaRequest(prompt, options)
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), config.timeouts.chat)
   let raw = ''
@@ -506,7 +541,13 @@ export async function createAdaptaCompletionStream(
       const rawText = await response.text()
       const text = extractTextFromAdaptaPayload(rawText)
       if (text) await onText(text)
-      return { content: text, raw: rawText, chatId: request.chatId, messageId: request.messageId }
+      return {
+        content: text,
+        raw: rawText,
+        chatId: request.chatId,
+        messageId: request.messageId,
+        refinementQuestions: extractRefinementQuestionsFromAdaptaPayload(rawText),
+      }
     }
 
     const reader = response.body.getReader()
@@ -558,7 +599,13 @@ export async function createAdaptaCompletionStream(
       )
     }
 
-    return { content, raw, chatId: request.chatId, messageId: request.messageId }
+    return {
+      content,
+      raw,
+      chatId: request.chatId,
+      messageId: request.messageId,
+      refinementQuestions: extractRefinementQuestionsFromAdaptaPayload(raw),
+    }
   } finally {
     clearTimeout(timeout)
   }
@@ -575,9 +622,6 @@ function extractTextDeltaFromSseLine(line: string): string {
     const event = JSON.parse(data)
     if (event?.type === 'text-delta' && typeof event.delta === 'string') return event.delta
     if (event?.type === 'text' && typeof event.text === 'string') return event.text
-    if (typeof event?.delta === 'string') return event.delta
-    if (typeof event?.text === 'string') return event.text
-    if (typeof event?.content === 'string') return event.content
   } catch {
     return ''
   }
@@ -585,13 +629,101 @@ function extractTextDeltaFromSseLine(line: string): string {
   return ''
 }
 
-async function resolveProjectFolderId(): Promise<string | null> {
-  if (!config.adapta.projectName) return null
+async function resolveProjectFolderId(options: AdaptaRequestOptions = {}): Promise<string | null> {
+  if (options.folderId) {
+    const project = await getAdaptaProjectFolderById(options.folderId)
+    if (!project) {
+      throw new Error(`Adapta project folder "${options.folderId}" was not found. Remove metadata.adapta_folder_id or choose a valid folder.`)
+    }
+    return project.id
+  }
 
-  const project = await getAdaptaProjectFolderByName(config.adapta.projectName)
+  const projectName = options.projectName || config.adapta.projectName
+  if (!projectName) return null
+
+  const project = await getAdaptaProjectFolderByName(projectName)
   if (!project) {
-    throw new Error(`Adapta project "${config.adapta.projectName}" was not found. Clear ADAPTA_PROJECT_NAME to use the default Chats menu.`)
+    throw new Error(`Adapta project "${projectName}" was not found. Clear ADAPTA_PROJECT_NAME or remove metadata.adapta_project_name to use the default Chats menu.`)
   }
 
   return project.id
+}
+
+export interface AdaptaRemoteChat {
+  id: string
+  title?: string
+  folderId?: string
+  createdAt?: unknown
+  updatedAt?: unknown
+  raw: unknown
+}
+
+export async function listAdaptaRemoteChats(options: {
+  folderId?: string
+  projectName?: string
+  limit?: number
+  page?: number
+} = {}): Promise<AdaptaRemoteChat[]> {
+  const headers = await getAdaptaSessionHeaders()
+  const folderId = await resolveProjectFolderId({
+    folderId: options.folderId,
+    projectName: options.projectName,
+  })
+  const url = new URL(`${config.adapta.baseUrl}/api/chat/v2`)
+  url.searchParams.set('limit', String(options.limit || 20))
+  url.searchParams.set('page', String(options.page || 1))
+  if (folderId) url.searchParams.set('folderId', folderId)
+
+  const response = await fetch(url, { headers })
+  const rawText = await response.text()
+  if (!response.ok) {
+    throw new AdaptaUpstreamError(
+      `Adapta upstream error: ${response.status} ${response.statusText} - ${rawText.slice(0, 500)}`,
+      response.status,
+    )
+  }
+
+  const payload = JSON.parse(rawText)
+  const items = Array.isArray(payload?.data)
+    ? payload.data
+    : Array.isArray(payload?.data?.items)
+      ? payload.data.items
+      : Array.isArray(payload?.data?.paginatedChats)
+        ? payload.data.paginatedChats
+        : Array.isArray(payload?.items)
+          ? payload.items
+          : []
+
+  return items
+    .filter((item: any) => typeof item?.id === 'string' || typeof item?.chatId === 'string')
+    .map((item: any) => ({
+      id: item.id || item.chatId,
+      title: item.title || item.name || item.lastMessage?.content,
+      folderId: item.folderId,
+      createdAt: item.createdAt || item.created_at,
+      updatedAt: item.updatedAt || item.updated_at,
+      raw: item,
+    }))
+}
+
+export async function deleteAdaptaRemoteChat(chatId: string): Promise<boolean> {
+  const headers = await getAdaptaSessionHeaders()
+  const candidates = [
+    `${config.adapta.baseUrl}/api/chat/${encodeURIComponent(chatId)}/v1`,
+    `${config.adapta.baseUrl}/api/chat/v1/${encodeURIComponent(chatId)}`,
+    `${config.adapta.baseUrl}/api/chat/v2/${encodeURIComponent(chatId)}`,
+  ]
+
+  let lastError = ''
+  for (const url of candidates) {
+    const response = await fetch(url, { method: 'DELETE', headers })
+    if (response.ok || response.status === 204) return true
+    lastError = `${response.status} ${response.statusText} - ${(await response.text()).slice(0, 300)}`
+    if (![404, 405].includes(response.status)) break
+  }
+
+  throw new AdaptaUpstreamError(
+    `Could not delete Adapta remote chat "${chatId}". Tried known internal endpoints. Last response: ${lastError}`,
+    502,
+  )
 }

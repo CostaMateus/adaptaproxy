@@ -7,6 +7,7 @@ import { Watchdog } from '../core/watchdog.js'
 import { app as modelsApp } from './models.js'
 import { app as chatsApp } from './chats.js'
 import { chatCompletions, chatCompletionsStop } from '../routes/chat.js'
+import { redactSecrets } from '../utils/redact.ts'
 
 const app = new Hono()
 
@@ -91,8 +92,8 @@ app.get('/metrics', (c) => {
 
 app.onError((err, c) => {
   metrics.increment('requests.errors')
-  console.error('API Error:', err)
-  return c.json({ error: err.message }, 500)
+  console.error('API Error:', redactSecrets(err))
+  return c.json({ error: redactSecrets(err.message) }, 500)
 })
 
 app.notFound((c) => c.json({ error: 'Not found' }, 404))
