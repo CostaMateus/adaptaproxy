@@ -1,5 +1,6 @@
 import { chromium, firefox, webkit, BrowserContext, Page, Request, Route } from 'playwright'
 import path from 'path'
+import { spawn } from 'node:child_process'
 import { config } from '../core/config.ts'
 
 export type BrowserType = 'chromium' | 'firefox' | 'webkit' | 'chrome' | 'edge'
@@ -31,6 +32,9 @@ export let activePage: Page | null = null
 let cachedChatRequest: CapturedAdaptaRequest | null = null
 let cachedProjectFolders: AdaptaProjectFolder[] | null = null
 let cachedAuthorizationHeader: string | null = null
+let currentBrowserType: BrowserType = 'chromium'
+let currentHeadless = true
+let autoLoginPromise: Promise<void> | null = null
 
 export class Mutex {
   private queue: (() => void)[] = []
@@ -60,6 +64,10 @@ export class Mutex {
 const discoveryMutex = new Mutex()
 const pageOperationMutex = new Mutex()
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+function resolveConfiguredBrowserType(): BrowserType {
+  return (process.env.BROWSER as BrowserType | undefined) || currentBrowserType || 'chromium'
+}
 
 function getBrowser(browserType: BrowserType) {
   switch (browserType) {
@@ -320,6 +328,8 @@ async function getAdaptaProjectFolders(): Promise<AdaptaProjectFolder[]> {
 
 export async function initPlaywright(headless = true, browserType: BrowserType = 'chromium'): Promise<void> {
   if (process.env.TEST_MOCK_PLAYWRIGHT) return
+  currentHeadless = headless
+  currentBrowserType = browserType
   if (context && activePage) return
 
   const { engine, channel } = getBrowser(browserType)
@@ -360,6 +370,48 @@ export async function closePlaywright(): Promise<void> {
   activePage = null
 }
 
+async function runNpmLogin(): Promise<void> {
+  const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(npmCommand, ['run', 'login'], {
+      cwd: process.cwd(),
+      env: process.env,
+      stdio: 'inherit',
+    })
+
+    child.on('error', reject)
+    child.on('exit', code => {
+      if (code === 0) {
+        resolve()
+        return
+      }
+      reject(new Error(`npm run login exited with code ${code ?? 'unknown'}`))
+    })
+  })
+}
+
+async function ensureAuthenticatedSession(): Promise<void> {
+  if (process.env.TEST_MOCK_PLAYWRIGHT) return
+  if (await hasValidSession().catch(() => false)) return
+
+  if (!autoLoginPromise) {
+    autoLoginPromise = (async () => {
+      console.warn('[Playwright] Adapta session is not authenticated. Running `npm run login` automatically...')
+      await closePlaywright()
+      await runNpmLogin()
+      await initPlaywright(currentHeadless, resolveConfiguredBrowserType())
+      if (!(await hasValidSession())) {
+        throw new Error('Adapta session is not authenticated after automatic login.')
+      }
+      console.log('[Playwright] Automatic Adapta login completed.')
+    })().finally(() => {
+      autoLoginPromise = null
+    })
+  }
+
+  await autoLoginPromise
+}
+
 export async function hasValidSession(): Promise<boolean> {
   if (process.env.TEST_MOCK_PLAYWRIGHT) return true
   if (!activePage) return false
@@ -371,6 +423,11 @@ export async function hasValidSession(): Promise<boolean> {
 export async function getAdaptaSessionHeaders(): Promise<Record<string, string>> {
   if (process.env.TEST_MOCK_PLAYWRIGHT) {
     return { cookie: 'token=mock', 'user-agent': 'mock' }
+  }
+  if (!activePage) throw new Error('Playwright not initialized')
+
+  if (!(await hasValidSession())) {
+    await ensureAuthenticatedSession()
   }
   if (!activePage) throw new Error('Playwright not initialized')
 
@@ -393,7 +450,7 @@ export async function getAdaptaSessionHeaders(): Promise<Record<string, string>>
     headers.authorization = `Bearer ${localAuthValue}`
   }
 
-  if (!headers.authorization) {
+  if (!headers.authorization && (cookieHeader || localAuthValue)) {
     headers.authorization = await captureAuthorizationHeader(activePage)
   }
 
@@ -435,7 +492,7 @@ export async function getAdaptaSessionDiagnostics(): Promise<AdaptaSessionDiagno
     diagnostics.authorizationCaptured = Boolean(headers.authorization)
   }
 
-  if (config.adapta.projectName) {
+  if (diagnostics.authenticated && config.adapta.projectName) {
     const project = await getAdaptaProjectFolderByName(config.adapta.projectName).catch(() => null)
     diagnostics.projectFound = Boolean(project)
     diagnostics.projectId = project?.id || null
@@ -495,8 +552,9 @@ export async function discoverAdaptaChatRequest(prompt: string): Promise<Capture
     })
 
     if (!(await hasValidSession())) {
-      throw new Error('Adapta session is not authenticated. Run `npm run login` and authenticate manually.')
+      await ensureAuthenticatedSession()
     }
+    if (!activePage) throw new Error('Playwright not initialized')
 
     const page = activePage
     if (config.adapta.projectName) {
