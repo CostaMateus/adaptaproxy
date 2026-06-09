@@ -7,6 +7,7 @@ import {
   getAdaptaProjectFolderByName,
   getAdaptaSessionHeaders,
   getCachedAdaptaChatRequest,
+  refreshAdaptaSession,
 } from './playwright.ts'
 
 export interface AdaptaRequestOptions {
@@ -451,7 +452,7 @@ async function buildAdaptaRequest(prompt: string, options: AdaptaRequestOptions 
 }> {
   const captured = getCachedAdaptaChatRequest() ?? getDefaultAdaptaChatRequest()
   const sessionHeaders = await getAdaptaSessionHeaders()
-  const session = touchAdaptaChatSession(options.chatId || newAdaptaMessageId())
+  const session = touchAdaptaChatSession(options.chatId || config.chats.defaultChatId)
   const prepared = prepareAdaptaPayload(captured.postData, prompt, session.id)
   const projectFolderId = await resolveProjectFolderId(options)
   const requestBody = projectFolderId
@@ -472,17 +473,30 @@ async function buildAdaptaRequest(prompt: string, options: AdaptaRequestOptions 
 }
 
 export async function createAdaptaCompletion(prompt: string, options: AdaptaRequestOptions = {}): Promise<AdaptaCompletion> {
-  const request = await buildAdaptaRequest(prompt, options)
+  let request = await buildAdaptaRequest(prompt, options)
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), config.timeouts.chat)
 
   try {
-    const response = await fetch(request.url, {
+    let response = await fetch(request.url, {
       method: request.method,
       headers: request.headers,
       body: JSON.stringify(request.body),
       signal: controller.signal,
     })
+
+    if (response.status === 401) {
+      console.warn('[Adapta] Upstream returned 401. Refreshing browser session and retrying completion once...')
+      await response.body?.cancel().catch(() => {})
+      await refreshAdaptaSession()
+      request = await buildAdaptaRequest(prompt, options)
+      response = await fetch(request.url, {
+        method: request.method,
+        headers: request.headers,
+        body: JSON.stringify(request.body),
+        signal: controller.signal,
+      })
+    }
 
     const contentType = response.headers.get('content-type') || ''
     const rawText = await response.text()
@@ -515,19 +529,32 @@ export async function createAdaptaCompletionStream(
   options: AdaptaRequestOptions,
   onText: (chunk: string) => Promise<void> | void,
 ): Promise<AdaptaStreamCompletion> {
-  const request = await buildAdaptaRequest(prompt, options)
+  let request = await buildAdaptaRequest(prompt, options)
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), config.timeouts.chat)
   let raw = ''
   let content = ''
 
   try {
-    const response = await fetch(request.url, {
+    let response = await fetch(request.url, {
       method: request.method,
       headers: request.headers,
       body: JSON.stringify(request.body),
       signal: controller.signal,
     })
+
+    if (response.status === 401) {
+      console.warn('[Adapta] Upstream returned 401. Refreshing browser session and retrying stream once...')
+      await response.body?.cancel().catch(() => {})
+      await refreshAdaptaSession()
+      request = await buildAdaptaRequest(prompt, options)
+      response = await fetch(request.url, {
+        method: request.method,
+        headers: request.headers,
+        body: JSON.stringify(request.body),
+        signal: controller.signal,
+      })
+    }
 
     if (!response.ok) {
       const rawText = await response.text()

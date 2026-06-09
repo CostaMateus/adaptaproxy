@@ -390,13 +390,35 @@ async function runNpmLogin(): Promise<void> {
   })
 }
 
-async function ensureAuthenticatedSession(): Promise<void> {
+async function clearStoredAuthState(): Promise<void> {
+  if (!activePage || !context) return
+
+  await context.clearCookies().catch(() => {})
+  await activePage.goto(config.adapta.baseUrl, {
+    waitUntil: 'domcontentloaded',
+    timeout: config.timeouts.navigation,
+  }).catch(() => {})
+  await activePage.evaluate(() => {
+    localStorage.clear()
+    sessionStorage.clear()
+  }).catch(() => {})
+}
+
+async function ensureAuthenticatedSession(forceRefresh = false): Promise<void> {
   if (process.env.TEST_MOCK_PLAYWRIGHT) return
-  if (await hasValidSession().catch(() => false)) return
+  if (!forceRefresh && await hasValidSession().catch(() => false)) return
 
   if (!autoLoginPromise) {
     autoLoginPromise = (async () => {
-      console.warn('[Playwright] Adapta session is not authenticated. Running `npm run login` automatically...')
+      console.warn(forceRefresh
+        ? '[Playwright] Adapta token was rejected upstream. Refreshing login automatically...'
+        : '[Playwright] Adapta session is not authenticated. Running `npm run login` automatically...')
+      if (forceRefresh) {
+        cachedAuthorizationHeader = null
+        cachedProjectFolders = null
+        cachedChatRequest = null
+        await clearStoredAuthState()
+      }
       await closePlaywright()
       await runNpmLogin()
       await initPlaywright(currentHeadless, resolveConfiguredBrowserType())
@@ -410,6 +432,10 @@ async function ensureAuthenticatedSession(): Promise<void> {
   }
 
   await autoLoginPromise
+}
+
+export async function refreshAdaptaSession(): Promise<void> {
+  await ensureAuthenticatedSession(true)
 }
 
 export async function hasValidSession(): Promise<boolean> {
