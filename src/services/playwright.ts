@@ -95,11 +95,12 @@ async function tryCredentialLogin(page: Page, email: string, password: string): 
   await passwordInput.fill(password)
 
   const submit = page.locator([
-    'button[type="submit"]',
-    'button:has-text("Entrar")',
-    'button:has-text("Sign in")',
-    'button:has-text("Login")',
-    'button:has-text("Continuar")',
+    'button[data-localization-key="formButtonPrimary"]:visible',
+    'button:visible:has-text("Continuar")',
+    'button:visible:has-text("Entrar")',
+    'button:visible:has-text("Sign in")',
+    'button:visible:has-text("Login")',
+    'button[type="submit"]:visible',
   ].join(', ')).first()
 
   if (await submit.count()) {
@@ -339,6 +340,7 @@ export async function ensureAdaptaProjectFolder(name: string): Promise<AdaptaPro
   const normalizedName = name.trim()
   if (!normalizedName) return null
 
+  await getAdaptaSessionHeaders()
   const existing = await getAdaptaProjectFolderByName(normalizedName)
   if (existing) return existing
   if (!activePage) throw new Error('Playwright not initialized')
@@ -375,7 +377,10 @@ async function getAdaptaProjectFolders(): Promise<AdaptaProjectFolder[]> {
     response.url().includes('/api/folders/v2') &&
     response.url().includes('type=CHATS') &&
     response.status() === 200,
-  { timeout: config.timeouts.navigation })
+  { timeout: config.timeouts.navigation }).catch(error => {
+    console.warn(`[Playwright] Could not list Adapta project folders: ${error.message}`)
+    return null
+  })
 
   await page.goto(config.adapta.chatUrl, {
     waitUntil: 'domcontentloaded',
@@ -383,6 +388,7 @@ async function getAdaptaProjectFolders(): Promise<AdaptaProjectFolder[]> {
   })
 
   const response = await responsePromise
+  if (!response) return []
   const payload = await response.json().catch(() => null) as any
   const data = Array.isArray(payload?.data) ? payload.data : []
 

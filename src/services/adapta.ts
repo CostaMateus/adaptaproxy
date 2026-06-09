@@ -469,13 +469,15 @@ async function buildAdaptaRequest(prompt: string, options: AdaptaRequestOptions 
       email: options.account.email,
       password: options.account.password,
     })
-    await ensureAdaptaProjectFolder(options.account.projectName)
+    await ensureAdaptaProjectFolder(options.account.projectName).catch(error => {
+      console.warn(`[Adapta] Could not ensure project "${options.account?.projectName}": ${error.message}`)
+    })
   }
 
   const captured = getCachedAdaptaChatRequest() ?? getDefaultAdaptaChatRequest()
   const sessionHeaders = await getAdaptaSessionHeaders()
   const projectFolderId = await resolveProjectFolderId(options)
-  const remoteChatId = await resolveAdaptaRemoteChatId(options, projectFolderId, sessionHeaders)
+  const remoteChatId = await resolveAdaptaRemoteChatId(options)
   const prepared = prepareAdaptaPayload(captured.postData, prompt, remoteChatId)
   const requestBody = projectFolderId
     ? applyProjectFolderToPayload(prepared.body, projectFolderId)
@@ -496,8 +498,6 @@ async function buildAdaptaRequest(prompt: string, options: AdaptaRequestOptions 
 
 async function resolveAdaptaRemoteChatId(
   options: AdaptaRequestOptions,
-  folderId: string | null,
-  headers: Record<string, string>,
 ): Promise<string> {
   if (options.chatId) {
     touchAdaptaChatSession(options.chatId)
@@ -516,62 +516,13 @@ async function resolveAdaptaRemoteChatId(
     return existing.remoteChatId
   }
 
-  const remoteChatId = await createRemoteAdaptaChat({
-    headers,
-    folderId,
-    title: `Adaptaproxy ${sessionKey}`,
-  })
+  const remoteChatId = newAdaptaMessageId()
   touchAdaptaChatSessionMapping({
     key: sessionKey,
     remoteChatId,
     title: `Adaptaproxy ${sessionKey}`,
   })
   return remoteChatId
-}
-
-function extractRemoteChatId(payload: any): string {
-  const candidates = [
-    payload?.data?.id,
-    payload?.data?.chatId,
-    payload?.data?.chat?.id,
-    payload?.id,
-    payload?.chatId,
-    payload?.chat?.id,
-  ]
-  const id = candidates.find(value => typeof value === 'string' && value.trim())
-  if (!id) {
-    throw new AdaptaUpstreamError(
-      `Adapta remote chat creation response did not contain a chat id: ${JSON.stringify(payload).slice(0, 500)}`,
-      502,
-    )
-  }
-  return id
-}
-
-async function createRemoteAdaptaChat(options: {
-  headers: Record<string, string>
-  folderId: string | null
-  title: string
-}): Promise<string> {
-  if (process.env.TEST_MOCK_PLAYWRIGHT) return `mock-${newAdaptaMessageId()}`
-
-  const body: Record<string, unknown> = { title: options.title }
-  if (options.folderId) body.folderId = options.folderId
-
-  const response = await fetch(`${config.adapta.baseUrl}/api/chat/v2`, {
-    method: 'POST',
-    headers: options.headers,
-    body: JSON.stringify(body),
-  })
-  const rawText = await response.text()
-  if (!response.ok) {
-    throw new AdaptaUpstreamError(
-      `Adapta upstream error creating remote chat: ${response.status} ${response.statusText} - ${rawText.slice(0, 500)}`,
-      response.status,
-    )
-  }
-
-  return extractRemoteChatId(JSON.parse(rawText))
 }
 
 export async function createAdaptaCompletion(prompt: string, options: AdaptaRequestOptions = {}): Promise<AdaptaCompletion> {
@@ -770,8 +721,13 @@ async function resolveProjectFolderId(options: AdaptaRequestOptions = {}): Promi
   const projectName = options.projectName || config.adapta.projectName
   if (!projectName) return null
 
-  const project = await getAdaptaProjectFolderByName(projectName)
+  const project = await getAdaptaProjectFolderByName(projectName).catch(error => {
+    if (options.projectName) throw error
+    console.warn(`[Adapta] Could not resolve default project "${projectName}": ${error.message}`)
+    return null
+  })
   if (!project) {
+    if (!options.projectName) return null
     throw new Error(`Adapta project "${projectName}" was not found. Clear ADAPTA_PROJECT_NAME or remove metadata.adapta_project_name to use the default Chats menu.`)
   }
 
@@ -801,7 +757,9 @@ export async function listAdaptaRemoteChats(options: {
       email: options.account.email,
       password: options.account.password,
     })
-    await ensureAdaptaProjectFolder(options.account.projectName)
+    await ensureAdaptaProjectFolder(options.account.projectName).catch(error => {
+      console.warn(`[Adapta] Could not ensure project "${options.account?.projectName}": ${error.message}`)
+    })
   }
   const headers = await getAdaptaSessionHeaders()
   const folderId = await resolveProjectFolderId({
@@ -855,7 +813,9 @@ export async function deleteAdaptaRemoteChat(chatId: string, options: {
       email: options.account.email,
       password: options.account.password,
     })
-    await ensureAdaptaProjectFolder(options.account.projectName)
+    await ensureAdaptaProjectFolder(options.account.projectName).catch(error => {
+      console.warn(`[Adapta] Could not ensure project "${options.account?.projectName}": ${error.message}`)
+    })
   }
   const headers = await getAdaptaSessionHeaders()
   const candidates = [

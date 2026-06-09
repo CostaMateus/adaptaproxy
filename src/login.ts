@@ -55,11 +55,12 @@ async function tryCredentialLogin(page: any, email: string, password: string): P
   await passwordInput.fill(password)
 
   const submit = page.locator([
-    'button[type="submit"]',
-    'button:has-text("Entrar")',
-    'button:has-text("Sign in")',
-    'button:has-text("Login")',
-    'button:has-text("Continuar")',
+    'button[data-localization-key="formButtonPrimary"]:visible',
+    'button:visible:has-text("Continuar")',
+    'button:visible:has-text("Entrar")',
+    'button:visible:has-text("Sign in")',
+    'button:visible:has-text("Login")',
+    'button[type="submit"]:visible',
   ].join(', ')).first()
 
   if (await submit.count()) {
