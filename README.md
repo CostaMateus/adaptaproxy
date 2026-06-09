@@ -135,7 +135,7 @@ curl http://localhost:3000/v1/chat/completions \
 
 ## Controle de chats
 
-Por padrão, cada chamada sem `metadata.adapta_chat_id` cria uma sessão local nova e retorna o ID usado. Essas sessões são persistidas em `CHAT_SESSIONS_FILE`, então sobrevivem a restart do servidor:
+Por padrão, chamadas sem `metadata.adapta_chat_id` reutilizam o chat fixo definido por `ADAPTA_DEFAULT_CHAT_ID`. Isso evita criar um chat novo na interface da Adapta a cada chamada da API. A sessão local é persistida em `CHAT_SESSIONS_FILE`, então sobrevive a restart do servidor:
 
 ```json
 {
@@ -156,7 +156,7 @@ A resposta inclui:
 }
 ```
 
-Para continuar no mesmo chat, envie o ID em `metadata`:
+Para usar outro chat específico, envie o ID em `metadata`:
 
 ```json
 {
@@ -247,6 +247,7 @@ A exclusão remota depende do endpoint interno atual da Adapta. Se a UI mudar, o
 | `HEADLESS` | `true` | Inicia Playwright sem janela ao rodar o servidor |
 | `USER_DATA_DIR` | `./adapta_profiles` | Perfil persistente do navegador |
 | `CHAT_SESSIONS_FILE` | `./adapta_profiles/chat-sessions.json` | Arquivo de sessões locais de chat |
+| `ADAPTA_DEFAULT_CHAT_ID` | `adaptaproxy-default-chat` | Chat reutilizado quando a request não envia `metadata.adapta_chat_id` |
 | `ADAPTA_BASE_URL` | `https://agent.adapta.one` | Origem da Adapta |
 | `ADAPTA_CHAT_URL` | `https://agent.adapta.one/agentic-chat` | Tela de chat usada para login e descoberta |
 | `ADAPTA_MODEL_ID` | `adapta-chat` | Modelo exposto em `/v1/models` |

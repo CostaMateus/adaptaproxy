@@ -14,6 +14,7 @@ const envSchema = z.object({
   CACHE_TTL: z.string().default('3600'),
   RESPONSE_TTL: z.string().default('1800'),
   CHAT_SESSIONS_FILE: z.string().default('./adapta_profiles/chat-sessions.json'),
+  ADAPTA_DEFAULT_CHAT_ID: z.string().default('adaptaproxy-default-chat'),
   METRICS_INTERVAL: z.string().default('10000'),
   WATCHDOG_INTERVAL: z.string().default('5000'),
   WATCHDOG_FAILURES: z.string().default('3'),
@@ -67,6 +68,7 @@ export const config = {
   },
   chats: {
     sessionsFile: env.CHAT_SESSIONS_FILE,
+    defaultChatId: env.ADAPTA_DEFAULT_CHAT_ID.trim() || 'adaptaproxy-default-chat',
   },
   metrics: {
     interval: parseInt(env.METRICS_INTERVAL),
