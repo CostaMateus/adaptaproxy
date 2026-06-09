@@ -34,6 +34,8 @@ let cachedProjectFolders: AdaptaProjectFolder[] | null = null
 let cachedAuthorizationHeader: string | null = null
 let currentBrowserType: BrowserType = 'chromium'
 let currentHeadless = true
+let currentProfileDir: string | null = null
+let currentCredentials: { email: string, password: string } | null = null
 let autoLoginPromise: Promise<void> | null = null
 
 export class Mutex {
@@ -69,6 +71,44 @@ function resolveConfiguredBrowserType(): BrowserType {
   return (process.env.BROWSER as BrowserType | undefined) || currentBrowserType || 'chromium'
 }
 
+async function tryCredentialLogin(page: Page, email: string, password: string): Promise<void> {
+  const emailInput = page.locator([
+    'input[type="email"]',
+    'input[name*="email" i]',
+    'input[autocomplete="email"]',
+    'input[placeholder*="email" i]',
+    'input[placeholder*="e-mail" i]',
+  ].join(', ')).first()
+
+  await emailInput.waitFor({ timeout: config.timeouts.page })
+  await emailInput.fill(email)
+
+  const passwordInput = page.locator([
+    'input[type="password"]',
+    'input[name*="password" i]',
+    'input[autocomplete="current-password"]',
+    'input[placeholder*="senha" i]',
+    'input[placeholder*="password" i]',
+  ].join(', ')).first()
+
+  await passwordInput.waitFor({ timeout: config.timeouts.page })
+  await passwordInput.fill(password)
+
+  const submit = page.locator([
+    'button[type="submit"]',
+    'button:has-text("Entrar")',
+    'button:has-text("Sign in")',
+    'button:has-text("Login")',
+    'button:has-text("Continuar")',
+  ].join(', ')).first()
+
+  if (await submit.count()) {
+    await submit.click()
+  } else {
+    await page.keyboard.press('Enter')
+  }
+}
+
 function getBrowser(browserType: BrowserType) {
   switch (browserType) {
     case 'firefox':
@@ -85,8 +125,12 @@ function getBrowser(browserType: BrowserType) {
   }
 }
 
-function profilePath(): string {
-  return path.resolve(config.browser.userDataDir, '_default')
+function profilePath(profileDir = currentProfileDir): string {
+  return path.resolve(profileDir || config.browser.userDataDir, '_default')
+}
+
+export function getActiveProfilePath(): string {
+  return profilePath()
 }
 
 function looksLikeAuthCookie(name: string): boolean {
@@ -291,6 +335,33 @@ export async function listAdaptaProjectFolders(): Promise<AdaptaProjectFolder[]>
   return getAdaptaProjectFolders()
 }
 
+export async function ensureAdaptaProjectFolder(name: string): Promise<AdaptaProjectFolder | null> {
+  const normalizedName = name.trim()
+  if (!normalizedName) return null
+
+  const existing = await getAdaptaProjectFolderByName(normalizedName)
+  if (existing) return existing
+  if (!activePage) throw new Error('Playwright not initialized')
+
+  const headers = await getAdaptaSessionHeaders()
+  const response = await fetch(`${config.adapta.baseUrl}/api/folders/v2`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ name: normalizedName, type: 'CHATS' }),
+  })
+  const rawText = await response.text()
+  if (!response.ok) {
+    throw new Error(`Could not create Adapta project "${normalizedName}": ${response.status} ${response.statusText} - ${rawText.slice(0, 300)}`)
+  }
+  cachedProjectFolders = null
+  const payload = JSON.parse(rawText)
+  const folder = payload?.data || payload
+  if (typeof folder?.id !== 'string') {
+    throw new Error(`Could not read created Adapta project id for "${normalizedName}".`)
+  }
+  return { id: folder.id, name: folder.name || normalizedName }
+}
+
 async function getAdaptaProjectFolders(): Promise<AdaptaProjectFolder[]> {
   if (cachedProjectFolders) return cachedProjectFolders
   if (!activePage) throw new Error('Playwright not initialized')
@@ -370,6 +441,37 @@ export async function closePlaywright(): Promise<void> {
   activePage = null
 }
 
+export async function usePlaywrightAccount(options: {
+  profileDir: string
+  headless?: boolean
+  browserType?: BrowserType
+  email?: string
+  password?: string
+}): Promise<void> {
+  if (process.env.TEST_MOCK_PLAYWRIGHT) return
+  const nextProfileDir = path.resolve(options.profileDir)
+  const nextHeadless = options.headless ?? currentHeadless
+  const nextBrowserType = options.browserType || resolveConfiguredBrowserType()
+
+  currentCredentials = options.email && options.password
+    ? { email: options.email, password: options.password }
+    : null
+
+  if (
+    context &&
+    activePage &&
+    currentProfileDir === nextProfileDir &&
+    currentHeadless === nextHeadless &&
+    currentBrowserType === nextBrowserType
+  ) {
+    return
+  }
+
+  await closePlaywright()
+  currentProfileDir = nextProfileDir
+  await initPlaywright(nextHeadless, nextBrowserType)
+}
+
 async function runNpmLogin(): Promise<void> {
   const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm'
   await new Promise<void>((resolve, reject) => {
@@ -388,6 +490,24 @@ async function runNpmLogin(): Promise<void> {
       reject(new Error(`npm run login exited with code ${code ?? 'unknown'}`))
     })
   })
+}
+
+async function runCredentialLogin(): Promise<void> {
+  if (!currentCredentials) {
+    await runNpmLogin()
+    return
+  }
+
+  const { context: loginContext, page } = await launchManualLogin(resolveConfiguredBrowserType(), {
+    profileDir: currentProfileDir || undefined,
+  })
+  try {
+    await tryCredentialLogin(page, currentCredentials.email, currentCredentials.password)
+      .catch(error => console.warn(`[Playwright] Credential login did not complete automatically: ${error.message}`))
+    await waitForManualLogin(page)
+  } finally {
+    await loginContext.close()
+  }
 }
 
 async function clearStoredAuthState(): Promise<void> {
@@ -420,7 +540,7 @@ async function ensureAuthenticatedSession(forceRefresh = false): Promise<void> {
         await clearStoredAuthState()
       }
       await closePlaywright()
-      await runNpmLogin()
+      await runCredentialLogin()
       await initPlaywright(currentHeadless, resolveConfiguredBrowserType())
       if (!(await hasValidSession())) {
         throw new Error('Adapta session is not authenticated after automatic login.')
@@ -528,9 +648,12 @@ export async function getAdaptaSessionDiagnostics(): Promise<AdaptaSessionDiagno
   return diagnostics
 }
 
-export async function launchManualLogin(browserType: BrowserType = 'chromium'): Promise<{ context: BrowserContext, page: Page }> {
+export async function launchManualLogin(
+  browserType: BrowserType = 'chromium',
+  options: { profileDir?: string } = {},
+): Promise<{ context: BrowserContext, page: Page }> {
   const { engine, channel } = getBrowser(browserType)
-  const loginContext = await engine.launchPersistentContext(profilePath(), {
+  const loginContext = await engine.launchPersistentContext(profilePath(options.profileDir || currentProfileDir), {
     headless: false,
     channel,
     userAgent: config.browser.userAgent,
@@ -554,6 +677,26 @@ export async function waitForManualLogin(page: Page): Promise<void> {
       return
     }
     await sleep(2000)
+  }
+}
+
+export async function loginWithCredentials(options: {
+  profileDir: string
+  email: string
+  password: string
+  browserType?: BrowserType
+}): Promise<void> {
+  currentProfileDir = path.resolve(options.profileDir)
+  currentCredentials = { email: options.email, password: options.password }
+  const { context: loginContext, page } = await launchManualLogin(options.browserType || resolveConfiguredBrowserType(), {
+    profileDir: currentProfileDir,
+  })
+  try {
+    await tryCredentialLogin(page, options.email, options.password)
+      .catch(error => console.warn(`[Playwright] Credential login did not complete automatically: ${error.message}`))
+    await waitForManualLogin(page)
+  } finally {
+    await loginContext.close()
   }
 }
 

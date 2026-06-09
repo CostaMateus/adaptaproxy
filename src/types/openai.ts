@@ -86,6 +86,9 @@ export interface OpenAIRequest {
   stream?: boolean;
   metadata?: {
     adapta_chat_id?: string;
+    adapta_session_key?: string;
+    adapta_new_chat?: boolean;
+    adapta_user_key?: string;
     adapta_project_name?: string;
     adapta_folder_id?: string;
     [key: string]: unknown;

@@ -14,6 +14,7 @@ O v1 usa uma sessão persistente do Playwright. Você faz login manualmente uma 
 - `DELETE /v1/adapta/chats/:id`
 - modelo fixo `adapta-chat`
 - login manual via `npm run login`
+- modo multiusuário corporativo com perfis Playwright isolados
 - streaming SSE real quando `stream: true`
 - sessão única
 - sessões locais persistidas em arquivo
@@ -22,7 +23,7 @@ O v1 usa uma sessão persistente do Playwright. Você faz login manualmente uma 
 - perguntas de refinamento em texto e em `metadata.adapta_refinement_questions`
 - listagem de chats reais da Adapta com `source=remote`
 
-Ainda não há suporte para tools, anexos, reasoning, multi-conta, automação de login por email/senha ou cancelamento upstream.
+Ainda não há suporte para tools, anexos, reasoning ou cancelamento upstream.
 
 ## Instalação
 
@@ -48,6 +49,48 @@ Também há variantes:
 npm run login:chrome
 npm run login:firefox
 npm run login:edge
+```
+
+## Modo de conta
+
+O `.env` aceita:
+
+```env
+ADAPTA_ACCOUNT_MODE=PERSONAL
+ADAPTA_PROJECT_NAME=PROXY
+```
+
+Em `PERSONAL`, o proxy usa a conta configurada em `ADAPTA_EMAIL`/`ADAPTA_PASSWORD` ou a sessão manual salva no perfil pessoal.
+
+Em `CORPORATE`, cada request precisa identificar o usuário com `x-adapta-user-key` ou `metadata.adapta_user_key`. Antes do primeiro uso, registre o login desse usuário:
+
+```bash
+curl -X POST http://localhost:3000/v1/adapta/users/login \
+  -H "Authorization: Bearer your_proxy_api_key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userKey": "mateus",
+    "email": "usuario@empresa.com",
+    "password": "senha"
+  }'
+```
+
+Para `CORPORATE`, defina também `ADAPTA_CREDENTIALS_SECRET` no `.env`; ele é usado para criptografar as senhas salvas em `CORPORATE_USERS_FILE`.
+
+Chamadas corporativas:
+
+```http
+x-adapta-user-key: mateus
+```
+
+ou:
+
+```json
+{
+  "metadata": {
+    "adapta_user_key": "mateus"
+  }
+}
 ```
 
 ## Executar
@@ -282,10 +325,14 @@ A exclusão remota depende do endpoint interno atual da Adapta. Se a UI mudar, o
 | `USER_DATA_DIR` | `./adapta_profiles` | Perfil persistente do navegador |
 | `CHAT_SESSIONS_FILE` | `./adapta_profiles/chat-sessions.json` | Arquivo de sessões locais de chat |
 | `ADAPTA_DEFAULT_CHAT_ID` | `adaptaproxy-default-chat` | Session key padrão usada quando a request não envia `metadata.adapta_session_key` |
+| `ADAPTA_ACCOUNT_MODE` | `PERSONAL` | `PERSONAL` usa uma conta; `CORPORATE` exige usuário por request |
+| `ADAPTA_CREDENTIALS_SECRET` | vazio | Segredo usado para criptografar senhas corporativas |
+| `CORPORATE_USERS_FILE` | `./adapta_profiles/users.json` | Cadastro criptografado dos usuários corporativos |
+| `CORPORATE_SESSIONS_DIR` | `./adapta_profiles/users` | Diretório dos perfis Playwright por usuário corporativo |
 | `ADAPTA_BASE_URL` | `https://agent.adapta.one` | Origem da Adapta |
 | `ADAPTA_CHAT_URL` | `https://agent.adapta.one/agentic-chat` | Tela de chat usada para login e descoberta |
 | `ADAPTA_MODEL_ID` | `adapta-chat` | Modelo exposto em `/v1/models` |
-| `ADAPTA_PROJECT_NAME` | vazio | Nome do projeto/pasta onde novos chats devem ser criados. Se vazio, usa o menu `CHATS` padrão |
+| `ADAPTA_PROJECT_NAME` | `PROXY` | Nome do projeto/pasta validado ou criado no primeiro uso da conta |
 
 Para criar novos chats sempre dentro do projeto `nome_da_pasta`:
 

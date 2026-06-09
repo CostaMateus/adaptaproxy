@@ -2,20 +2,25 @@ import { config } from '../core/config.ts'
 import {
   getAdaptaChatSessionByKey,
   newAdaptaMessageId,
+  setAdaptaChatSessionsFile,
   touchAdaptaChatSession,
   touchAdaptaChatSessionMapping,
 } from '../core/chat-sessions.ts'
 import type { Message } from '../utils/types.ts'
 import {
   getDefaultAdaptaChatRequest,
+  ensureAdaptaProjectFolder,
   getAdaptaProjectFolderById,
   getAdaptaProjectFolderByName,
   getAdaptaSessionHeaders,
   getCachedAdaptaChatRequest,
   refreshAdaptaSession,
+  usePlaywrightAccount,
 } from './playwright.ts'
+import { AdaptaAccountContext } from './adapta-account-resolver.ts'
 
 export interface AdaptaRequestOptions {
+  account?: AdaptaAccountContext
   chatId?: string
   sessionKey?: string
   newChat?: boolean
@@ -457,6 +462,16 @@ async function buildAdaptaRequest(prompt: string, options: AdaptaRequestOptions 
   chatId: string
   messageId: string
 }> {
+  if (options.account) {
+    setAdaptaChatSessionsFile(options.account.chatSessionsFile)
+    await usePlaywrightAccount({
+      profileDir: options.account.profileDir,
+      email: options.account.email,
+      password: options.account.password,
+    })
+    await ensureAdaptaProjectFolder(options.account.projectName)
+  }
+
   const captured = getCachedAdaptaChatRequest() ?? getDefaultAdaptaChatRequest()
   const sessionHeaders = await getAdaptaSessionHeaders()
   const projectFolderId = await resolveProjectFolderId(options)
@@ -773,11 +788,21 @@ export interface AdaptaRemoteChat {
 }
 
 export async function listAdaptaRemoteChats(options: {
+  account?: AdaptaAccountContext
   folderId?: string
   projectName?: string
   limit?: number
   page?: number
 } = {}): Promise<AdaptaRemoteChat[]> {
+  if (options.account) {
+    setAdaptaChatSessionsFile(options.account.chatSessionsFile)
+    await usePlaywrightAccount({
+      profileDir: options.account.profileDir,
+      email: options.account.email,
+      password: options.account.password,
+    })
+    await ensureAdaptaProjectFolder(options.account.projectName)
+  }
   const headers = await getAdaptaSessionHeaders()
   const folderId = await resolveProjectFolderId({
     folderId: options.folderId,
@@ -820,7 +845,18 @@ export async function listAdaptaRemoteChats(options: {
     }))
 }
 
-export async function deleteAdaptaRemoteChat(chatId: string): Promise<boolean> {
+export async function deleteAdaptaRemoteChat(chatId: string, options: {
+  account?: AdaptaAccountContext
+} = {}): Promise<boolean> {
+  if (options.account) {
+    setAdaptaChatSessionsFile(options.account.chatSessionsFile)
+    await usePlaywrightAccount({
+      profileDir: options.account.profileDir,
+      email: options.account.email,
+      password: options.account.password,
+    })
+    await ensureAdaptaProjectFolder(options.account.projectName)
+  }
   const headers = await getAdaptaSessionHeaders()
   const candidates = [
     `${config.adapta.baseUrl}/api/chat/${encodeURIComponent(chatId)}/v1`,

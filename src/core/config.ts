@@ -15,6 +15,10 @@ const envSchema = z.object({
   RESPONSE_TTL: z.string().default('1800'),
   CHAT_SESSIONS_FILE: z.string().default('./adapta_profiles/chat-sessions.json'),
   ADAPTA_DEFAULT_CHAT_ID: z.string().default('adaptaproxy-default-chat'),
+  ADAPTA_ACCOUNT_MODE: z.enum(['PERSONAL', 'CORPORATE']).default('PERSONAL'),
+  ADAPTA_CREDENTIALS_SECRET: z.string().default(''),
+  CORPORATE_USERS_FILE: z.string().default('./adapta_profiles/users.json'),
+  CORPORATE_SESSIONS_DIR: z.string().default('./adapta_profiles/users'),
   METRICS_INTERVAL: z.string().default('10000'),
   WATCHDOG_INTERVAL: z.string().default('5000'),
   WATCHDOG_FAILURES: z.string().default('3'),
@@ -25,7 +29,9 @@ const envSchema = z.object({
   ADAPTA_BASE_URL: z.string().default('https://agent.adapta.one'),
   ADAPTA_CHAT_URL: z.string().default('https://agent.adapta.one/agentic-chat'),
   ADAPTA_MODEL_ID: z.string().default('adapta-chat'),
-  ADAPTA_PROJECT_NAME: z.string().default(''),
+  ADAPTA_PROJECT_NAME: z.string().default('PROXY'),
+  ADAPTA_EMAIL: z.string().default(''),
+  ADAPTA_PASSWORD: z.string().default(''),
   API_KEY: z.string().default(''),
 })
 
@@ -87,10 +93,16 @@ export const config = {
   },
   apiKey: env.API_KEY,
   adapta: {
+    accountMode: env.ADAPTA_ACCOUNT_MODE,
+    credentialsSecret: env.ADAPTA_CREDENTIALS_SECRET,
+    corporateUsersFile: env.CORPORATE_USERS_FILE,
+    corporateSessionsDir: env.CORPORATE_SESSIONS_DIR,
     baseUrl: env.ADAPTA_BASE_URL,
     chatUrl: env.ADAPTA_CHAT_URL,
     modelId: env.ADAPTA_MODEL_ID,
-    projectName: env.ADAPTA_PROJECT_NAME.trim(),
+    projectName: env.ADAPTA_PROJECT_NAME.trim() || 'PROXY',
+    email: env.ADAPTA_EMAIL,
+    password: env.ADAPTA_PASSWORD,
   },
 }
 

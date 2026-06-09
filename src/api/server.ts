@@ -6,6 +6,7 @@ import { MemoryCache } from '../cache/memory-cache.js'
 import { Watchdog } from '../core/watchdog.js'
 import { app as modelsApp } from './models.js'
 import { app as chatsApp } from './chats.js'
+import { app as adaptaUsersApp } from '../routes/adapta-users.ts'
 import { chatCompletions, chatCompletionsStop } from '../routes/chat.js'
 import { redactSecrets } from '../utils/redact.ts'
 
@@ -41,6 +42,7 @@ app.use('/v1/*', async (c, next) => {
 
 app.route('', modelsApp)
 app.route('', chatsApp)
+app.route('', adaptaUsersApp)
 app.post('/v1/chat/completions', chatCompletions)
 app.post('/v1/chat/completions/stop', chatCompletionsStop)
 
@@ -102,8 +104,18 @@ export async function startServer(): Promise<void> {
   cache = new MemoryCache()
   await cache.connect()
 
-  const { initPlaywright } = await import('../services/playwright.ts')
-  await initPlaywright(config.browser.headless)
+  if (config.adapta.accountMode === 'PERSONAL') {
+    const { initPlaywright, usePlaywrightAccount } = await import('../services/playwright.ts')
+    const { personalAccountContext } = await import('../services/adapta-account-resolver.ts')
+    const account = personalAccountContext()
+    await usePlaywrightAccount({
+      profileDir: account.profileDir,
+      headless: config.browser.headless,
+      email: account.email,
+      password: account.password,
+    })
+    await initPlaywright(config.browser.headless)
+  }
 
   watchdog = new Watchdog()
   watchdog.start()

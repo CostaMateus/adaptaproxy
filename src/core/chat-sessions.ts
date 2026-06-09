@@ -14,9 +14,18 @@ export interface AdaptaChatSession {
 
 const sessions = new Map<string, AdaptaChatSession>()
 let loaded = false
+let sessionsFileOverride: string | null = null
 
 function sessionsFile(): string {
-  return path.resolve(config.chats.sessionsFile)
+  return path.resolve(sessionsFileOverride || config.chats.sessionsFile)
+}
+
+export function setAdaptaChatSessionsFile(file: string | null): void {
+  const resolved = file ? path.resolve(file) : null
+  if (resolved === sessionsFileOverride) return
+  sessionsFileOverride = resolved
+  sessions.clear()
+  loaded = false
 }
 
 function loadSessions(): void {

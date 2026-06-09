@@ -1,0 +1,74 @@
+import path from 'node:path'
+import { config } from '../core/config.ts'
+import {
+  corporateChatSessionsFile,
+  decryptCorporatePassword,
+  getCorporateUser,
+  normalizeAdaptaUserKey,
+} from './adapta-user-store.ts'
+
+export type AdaptaAccountMode = 'PERSONAL' | 'CORPORATE'
+
+export interface AdaptaAccountContext {
+  mode: AdaptaAccountMode
+  userKey: string
+  profileDir: string
+  chatSessionsFile: string
+  email: string
+  password: string
+  projectName: string
+  projectId?: string
+}
+
+export class AdaptaUserRequiredError extends Error {
+  readonly status = 400
+  readonly type = 'adapta_user_required'
+
+  constructor() {
+    super('CORPORATE mode requires x-adapta-user-key or metadata.adapta_user_key.')
+    this.name = 'AdaptaUserRequiredError'
+  }
+}
+
+export class AdaptaUserLoginRequiredError extends Error {
+  readonly status = 401
+  readonly type = 'adapta_user_login_required'
+
+  constructor(userKey: string) {
+    super(`Corporate user "${userKey}" is not logged in. Call POST /v1/adapta/users/login first.`)
+    this.name = 'AdaptaUserLoginRequiredError'
+  }
+}
+
+export function personalAccountContext(): AdaptaAccountContext {
+  return {
+    mode: 'PERSONAL',
+    userKey: 'personal',
+    profileDir: path.resolve(config.browser.userDataDir),
+    chatSessionsFile: path.resolve(config.browser.userDataDir, 'personal', 'chat-sessions.json'),
+    email: config.adapta.email,
+    password: config.adapta.password,
+    projectName: config.adapta.projectName,
+  }
+}
+
+export function resolveAdaptaAccountContext(options: { userKey?: string } = {}): AdaptaAccountContext {
+  if (config.adapta.accountMode === 'PERSONAL') return personalAccountContext()
+
+  const userKey = normalizeAdaptaUserKey(options.userKey || '')
+  if (!userKey) throw new AdaptaUserRequiredError()
+
+  const user = getCorporateUser(userKey)
+  if (!user) throw new AdaptaUserLoginRequiredError(userKey)
+
+  return {
+    mode: 'CORPORATE',
+    userKey,
+    profileDir: path.resolve(user.profileDir),
+    chatSessionsFile: corporateChatSessionsFile(userKey),
+    email: user.email,
+    password: decryptCorporatePassword(user.encryptedPassword),
+    projectName: user.projectName || config.adapta.projectName,
+    projectId: user.projectId,
+  }
+}
