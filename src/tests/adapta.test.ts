@@ -186,14 +186,39 @@ test('persists Adapta session key to remote chat id mapping', () => {
   assert.equal(getAdaptaChatSessionByKey(key)?.remoteChatId, 'remote-chat-2')
 })
 
-test('/v1/models returns adapta-chat', async () => {
-  const response = await app.request('/v1/models')
-  assert.equal(response.status, 200)
+test('/v1/models lists Adapta models with GPT_55 as default', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    data: {
+      text: {
+        views: {
+          general: {
+            models: [
+              { key: 'GPT_54', label: 'GPT-5.4', enabled: true, order: 1, familyKey: 'GPT' },
+            ],
+          },
+          workspace: {
+            models: [
+              { key: 'GPT_55', label: 'GPT-5.5', enabled: true, order: 0, familyKey: 'GPT' },
+            ],
+          },
+        },
+      },
+    },
+  }))) as typeof fetch
 
-  const body = await response.json() as any
-  assert.equal(body.object, 'list')
-  assert.equal(body.data[0].id, 'adapta-chat')
-  assert.equal(body.data[0].owned_by, 'adapta')
+  try {
+    const response = await app.request('/v1/models')
+    assert.equal(response.status, 200)
+
+    const body = await response.json() as any
+    assert.equal(body.object, 'list')
+    assert.equal(body.data[0].id, 'GPT_55')
+    assert.equal(body.data[0].default, true)
+    assert.ok(body.data.some((model: any) => model.id === 'GPT_54'))
+  } finally {
+    globalThis.fetch = originalFetch
+  }
 })
 
 test('/v1/adapta/chats creates, lists, reads, and deletes chat sessions', async () => {

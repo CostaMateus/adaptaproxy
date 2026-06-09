@@ -1,30 +1,38 @@
 import { Hono } from 'hono'
 import { config } from '../core/config.ts'
+import { getAdaptaModel, listAdaptaModels, AdaptaModelInfo } from '../services/adapta-models.ts'
 
 const app = new Hono()
 
-function adaptaModel(id = config.adapta.modelId) {
+function adaptaModel(model: AdaptaModelInfo) {
   return {
-    id,
+    id: model.id,
     object: 'model',
     created: 0,
     owned_by: 'adapta',
+    label: model.label,
+    family: model.familyKey,
+    default: model.id === config.adapta.modelId,
+    badge: model.badge,
+    description: model.shortDescription,
   }
 }
 
-app.get('/v1/models', c => {
+app.get('/v1/models', async c => {
+  const models = await listAdaptaModels()
   return c.json({
     object: 'list',
-    data: [adaptaModel()],
+    data: models.map(adaptaModel),
   })
 })
 
-app.get('/v1/models/:model', c => {
+app.get('/v1/models/:model', async c => {
   const modelId = c.req.param('model')
-  if (modelId !== config.adapta.modelId) {
+  const model = await getAdaptaModel(modelId)
+  if (!model) {
     return c.json({ error: 'Model not found' }, 404)
   }
-  return c.json(adaptaModel(modelId))
+  return c.json(adaptaModel(model))
 })
 
 export { app }

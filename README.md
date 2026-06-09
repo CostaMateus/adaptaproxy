@@ -12,7 +12,7 @@ O v1 usa uma sessão persistente do Playwright. Você faz login manualmente uma 
 - `GET /v1/adapta/chats`
 - `GET /v1/adapta/chats/:id`
 - `DELETE /v1/adapta/chats/:id`
-- modelo fixo `adapta-chat`
+- modelos de texto listados em `/v1/models`, com `GPT_55` como padrão
 - login manual via `npm run login`
 - modo multiusuário corporativo com perfis Playwright isolados
 - streaming SSE real quando `stream: true`
@@ -131,7 +131,7 @@ const client = new OpenAI({
 })
 
 const response = await client.chat.completions.create({
-  model: 'adapta-chat',
+  model: 'GPT_55',
   messages: [
     { role: 'user', content: 'Explique o que e o Adaptaproxy.' },
   ],
@@ -151,7 +151,7 @@ http://localhost:3000/v1
 Use:
 
 ```text
-model: adapta-chat
+model: GPT_55
 apiKey: <API_KEY do .env>
 ```
 
@@ -159,7 +159,7 @@ Para clientes OpenAI-compatible como Continue, Cline/Roo Code e OpenAI SDK, a co
 
 ```ts
 baseURL: 'http://localhost:3000/v1'
-model: 'adapta-chat'
+model: 'GPT_55'
 ```
 
 ## Exemplo com cURL
@@ -169,7 +169,7 @@ curl http://localhost:3000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your_proxy_api_key" \
   -d '{
-    "model": "adapta-chat",
+    "model": "GPT_55",
     "messages": [
       { "role": "user", "content": "Ola" }
     ]
@@ -182,7 +182,7 @@ Por padrão, chamadas sem `metadata.adapta_chat_id` usam a session key `default`
 
 ```json
 {
-  "model": "adapta-chat",
+  "model": "GPT_55",
   "messages": [
     { "role": "user", "content": "Ola" }
   ]
@@ -204,7 +204,7 @@ Para separar clientes, envie uma session key:
 
 ```json
 {
-  "model": "adapta-chat",
+  "model": "GPT_55",
   "metadata": {
     "adapta_session_key": "hermes"
   },
@@ -220,7 +220,7 @@ Para criar um novo chat remoto explicitamente para a session key e passar a reut
 
 ```json
 {
-  "model": "adapta-chat",
+  "model": "GPT_55",
   "metadata": {
     "adapta_session_key": "hermes",
     "adapta_new_chat": true
@@ -237,7 +237,7 @@ Para usar um chat remoto específico, envie o ID em `metadata`:
 
 ```json
 {
-  "model": "adapta-chat",
+  "model": "GPT_55",
   "metadata": {
     "adapta_chat_id": "..."
   },
@@ -251,7 +251,7 @@ Para direcionar uma chamada para outro projeto/pasta sem reiniciar o servidor, u
 
 ```json
 {
-  "model": "adapta-chat",
+  "model": "GPT_55",
   "metadata": {
     "adapta_project_name": "PROJECT"
   },
@@ -331,7 +331,7 @@ A exclusão remota depende do endpoint interno atual da Adapta. Se a UI mudar, o
 | `CORPORATE_SESSIONS_DIR` | `./adapta_profiles/users` | Diretório dos perfis Playwright por usuário corporativo |
 | `ADAPTA_BASE_URL` | `https://agent.adapta.one` | Origem da Adapta |
 | `ADAPTA_CHAT_URL` | `https://agent.adapta.one/agentic-chat` | Tela de chat usada para login e descoberta |
-| `ADAPTA_MODEL_ID` | `adapta-chat` | Modelo exposto em `/v1/models` |
+| `ADAPTA_MODEL_ID` | `GPT_55` | Modelo padrão; `/v1/models` lista as opções suportadas pela Adapta |
 | `ADAPTA_PROJECT_NAME` | `PROXY` | Nome do projeto/pasta validado ou criado no primeiro uso da conta |
 
 Para criar novos chats sempre dentro do projeto `nome_da_pasta`:

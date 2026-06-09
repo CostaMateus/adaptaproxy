@@ -28,7 +28,7 @@ const envSchema = z.object({
   WS_CRITICAL: z.string().default('100'),
   ADAPTA_BASE_URL: z.string().default('https://agent.adapta.one'),
   ADAPTA_CHAT_URL: z.string().default('https://agent.adapta.one/agentic-chat'),
-  ADAPTA_MODEL_ID: z.string().default('adapta-chat'),
+  ADAPTA_MODEL_ID: z.string().default('GPT_55'),
   ADAPTA_PROJECT_NAME: z.string().default('PROXY'),
   ADAPTA_EMAIL: z.string().default(''),
   ADAPTA_PASSWORD: z.string().default(''),
