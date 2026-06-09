@@ -1,5 +1,10 @@
 import { config } from '../core/config.ts'
-import { newAdaptaMessageId, touchAdaptaChatSession } from '../core/chat-sessions.ts'
+import {
+  getAdaptaChatSessionByKey,
+  newAdaptaMessageId,
+  touchAdaptaChatSession,
+  touchAdaptaChatSessionMapping,
+} from '../core/chat-sessions.ts'
 import type { Message } from '../utils/types.ts'
 import {
   getDefaultAdaptaChatRequest,
@@ -12,6 +17,8 @@ import {
 
 export interface AdaptaRequestOptions {
   chatId?: string
+  sessionKey?: string
+  newChat?: boolean
   projectName?: string
   folderId?: string
 }
@@ -452,9 +459,9 @@ async function buildAdaptaRequest(prompt: string, options: AdaptaRequestOptions 
 }> {
   const captured = getCachedAdaptaChatRequest() ?? getDefaultAdaptaChatRequest()
   const sessionHeaders = await getAdaptaSessionHeaders()
-  const session = touchAdaptaChatSession(options.chatId || config.chats.defaultChatId)
-  const prepared = prepareAdaptaPayload(captured.postData, prompt, session.id)
   const projectFolderId = await resolveProjectFolderId(options)
+  const remoteChatId = await resolveAdaptaRemoteChatId(options, projectFolderId, sessionHeaders)
+  const prepared = prepareAdaptaPayload(captured.postData, prompt, remoteChatId)
   const requestBody = projectFolderId
     ? applyProjectFolderToPayload(prepared.body, projectFolderId)
     : prepared.body
@@ -470,6 +477,86 @@ async function buildAdaptaRequest(prompt: string, options: AdaptaRequestOptions 
     chatId: prepared.chatId,
     messageId: prepared.messageId,
   }
+}
+
+async function resolveAdaptaRemoteChatId(
+  options: AdaptaRequestOptions,
+  folderId: string | null,
+  headers: Record<string, string>,
+): Promise<string> {
+  if (options.chatId) {
+    touchAdaptaChatSession(options.chatId)
+    return options.chatId
+  }
+
+  const sessionKey = (options.sessionKey || config.chats.defaultChatId || 'default').trim() || 'default'
+  const existing = getAdaptaChatSessionByKey(sessionKey)
+  if (!options.newChat && existing?.remoteChatId) {
+    existing.updatedAt = Date.now()
+    touchAdaptaChatSessionMapping({
+      key: sessionKey,
+      remoteChatId: existing.remoteChatId,
+      title: existing.title,
+    })
+    return existing.remoteChatId
+  }
+
+  const remoteChatId = await createRemoteAdaptaChat({
+    headers,
+    folderId,
+    title: `Adaptaproxy ${sessionKey}`,
+  })
+  touchAdaptaChatSessionMapping({
+    key: sessionKey,
+    remoteChatId,
+    title: `Adaptaproxy ${sessionKey}`,
+  })
+  return remoteChatId
+}
+
+function extractRemoteChatId(payload: any): string {
+  const candidates = [
+    payload?.data?.id,
+    payload?.data?.chatId,
+    payload?.data?.chat?.id,
+    payload?.id,
+    payload?.chatId,
+    payload?.chat?.id,
+  ]
+  const id = candidates.find(value => typeof value === 'string' && value.trim())
+  if (!id) {
+    throw new AdaptaUpstreamError(
+      `Adapta remote chat creation response did not contain a chat id: ${JSON.stringify(payload).slice(0, 500)}`,
+      502,
+    )
+  }
+  return id
+}
+
+async function createRemoteAdaptaChat(options: {
+  headers: Record<string, string>
+  folderId: string | null
+  title: string
+}): Promise<string> {
+  if (process.env.TEST_MOCK_PLAYWRIGHT) return `mock-${newAdaptaMessageId()}`
+
+  const body: Record<string, unknown> = { title: options.title }
+  if (options.folderId) body.folderId = options.folderId
+
+  const response = await fetch(`${config.adapta.baseUrl}/api/chat/v2`, {
+    method: 'POST',
+    headers: options.headers,
+    body: JSON.stringify(body),
+  })
+  const rawText = await response.text()
+  if (!response.ok) {
+    throw new AdaptaUpstreamError(
+      `Adapta upstream error creating remote chat: ${response.status} ${response.statusText} - ${rawText.slice(0, 500)}`,
+      response.status,
+    )
+  }
+
+  return extractRemoteChatId(JSON.parse(rawText))
 }
 
 export async function createAdaptaCompletion(prompt: string, options: AdaptaRequestOptions = {}): Promise<AdaptaCompletion> {

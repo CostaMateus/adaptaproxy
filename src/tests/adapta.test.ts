@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { app } from '../api/server.ts'
+import { getAdaptaChatSessionByKey, touchAdaptaChatSessionMapping } from '../core/chat-sessions.ts'
 import { getDefaultAdaptaChatRequest } from '../services/playwright.ts'
 import {
   applyProjectFolderToPayload,
@@ -165,6 +166,24 @@ test('applies project folder id to Adapta payload', () => {
   )
 
   assert.equal(applyProjectFolderToPayload(null, 'folder-1'), null)
+})
+
+test('persists Adapta session key to remote chat id mapping', () => {
+  const key = `test-session-${Date.now()}`
+  const first = touchAdaptaChatSessionMapping({
+    key,
+    remoteChatId: 'remote-chat-1',
+    title: 'Mapped chat',
+  })
+  assert.equal(first.key, key)
+  assert.equal(first.remoteChatId, 'remote-chat-1')
+
+  const second = touchAdaptaChatSessionMapping({
+    key,
+    remoteChatId: 'remote-chat-2',
+  })
+  assert.equal(second.id, first.id)
+  assert.equal(getAdaptaChatSessionByKey(key)?.remoteChatId, 'remote-chat-2')
 })
 
 test('/v1/models returns adapta-chat', async () => {

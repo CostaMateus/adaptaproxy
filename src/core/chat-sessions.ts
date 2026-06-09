@@ -5,6 +5,8 @@ import { config } from './config.ts'
 
 export interface AdaptaChatSession {
   id: string
+  key?: string
+  remoteChatId?: string
   createdAt: number
   updatedAt: number
   title?: string
@@ -28,6 +30,8 @@ function loadSessions(): void {
       if (!session?.id || typeof session.id !== 'string') continue
       sessions.set(session.id, {
         id: session.id,
+        key: typeof session.key === 'string' ? session.key : undefined,
+        remoteChatId: typeof session.remoteChatId === 'string' ? session.remoteChatId : undefined,
         title: session.title,
         createdAt: Number(session.createdAt) || Date.now(),
         updatedAt: Number(session.updatedAt) || Date.now(),
@@ -50,11 +54,18 @@ function saveSessions(): void {
   }, null, 2))
 }
 
-export function createAdaptaChatSession(input: { id?: string, title?: string } = {}): AdaptaChatSession {
+export function createAdaptaChatSession(input: {
+  id?: string
+  key?: string
+  remoteChatId?: string
+  title?: string
+} = {}): AdaptaChatSession {
   loadSessions()
   const now = Date.now()
   const session: AdaptaChatSession = {
     id: input.id || uuidv4(),
+    key: input.key,
+    remoteChatId: input.remoteChatId,
     title: input.title,
     createdAt: now,
     updatedAt: now,
@@ -69,6 +80,11 @@ export function getAdaptaChatSession(id: string): AdaptaChatSession | undefined 
   return sessions.get(id)
 }
 
+export function getAdaptaChatSessionByKey(key: string): AdaptaChatSession | undefined {
+  loadSessions()
+  return [...sessions.values()].find(session => session.key === key)
+}
+
 export function touchAdaptaChatSession(id: string): AdaptaChatSession {
   loadSessions()
   const existing = sessions.get(id)
@@ -78,6 +94,30 @@ export function touchAdaptaChatSession(id: string): AdaptaChatSession {
     return existing
   }
   return createAdaptaChatSession({ id })
+}
+
+export function touchAdaptaChatSessionMapping(input: {
+  key: string
+  remoteChatId: string
+  title?: string
+}): AdaptaChatSession {
+  loadSessions()
+  const existing = getAdaptaChatSessionByKey(input.key)
+  const now = Date.now()
+  if (existing) {
+    existing.remoteChatId = input.remoteChatId
+    existing.title = input.title || existing.title
+    existing.updatedAt = now
+    saveSessions()
+    return existing
+  }
+
+  return createAdaptaChatSession({
+    id: input.key,
+    key: input.key,
+    remoteChatId: input.remoteChatId,
+    title: input.title,
+  })
 }
 
 export function listAdaptaChatSessions(options: { persist?: boolean } = {}): AdaptaChatSession[] {

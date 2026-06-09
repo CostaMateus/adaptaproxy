@@ -135,7 +135,7 @@ curl http://localhost:3000/v1/chat/completions \
 
 ## Controle de chats
 
-Por padrão, chamadas sem `metadata.adapta_chat_id` reutilizam o chat fixo definido por `ADAPTA_DEFAULT_CHAT_ID`. Isso evita criar um chat novo na interface da Adapta a cada chamada da API. A sessão local é persistida em `CHAT_SESSIONS_FILE`, então sobrevive a restart do servidor:
+Por padrão, chamadas sem `metadata.adapta_chat_id` usam a session key `default`. Na primeira chamada dessa session key, o Adaptaproxy cria um chat remoto real na Adapta e salva o mapeamento em `CHAT_SESSIONS_FILE`. Nas próximas chamadas com a mesma session key, ele reutiliza o `remoteChatId` salvo em vez de inventar um UUID local.
 
 ```json
 {
@@ -151,12 +151,46 @@ A resposta inclui:
 ```json
 {
   "metadata": {
-    "adapta_chat_id": "..."
+    "adapta_chat_id": "...",
+    "adapta_session_key": "default"
   }
 }
 ```
 
-Para usar outro chat específico, envie o ID em `metadata`:
+Para separar clientes, envie uma session key:
+
+```json
+{
+  "model": "adapta-chat",
+  "metadata": {
+    "adapta_session_key": "hermes"
+  },
+  "messages": [
+    { "role": "user", "content": "Ola" }
+  ]
+}
+```
+
+Também é possível usar o header `x-adapta-session-key: hermes`.
+
+Para criar um novo chat remoto explicitamente para a session key e passar a reutilizá-lo:
+
+```json
+{
+  "model": "adapta-chat",
+  "metadata": {
+    "adapta_session_key": "hermes",
+    "adapta_new_chat": true
+  },
+  "messages": [
+    { "role": "user", "content": "Comece uma nova conversa." }
+  ]
+}
+```
+
+Também é possível usar o header `x-adapta-new-chat: true`.
+
+Para usar um chat remoto específico, envie o ID em `metadata`:
 
 ```json
 {
@@ -247,7 +281,7 @@ A exclusão remota depende do endpoint interno atual da Adapta. Se a UI mudar, o
 | `HEADLESS` | `true` | Inicia Playwright sem janela ao rodar o servidor |
 | `USER_DATA_DIR` | `./adapta_profiles` | Perfil persistente do navegador |
 | `CHAT_SESSIONS_FILE` | `./adapta_profiles/chat-sessions.json` | Arquivo de sessões locais de chat |
-| `ADAPTA_DEFAULT_CHAT_ID` | `adaptaproxy-default-chat` | Chat reutilizado quando a request não envia `metadata.adapta_chat_id` |
+| `ADAPTA_DEFAULT_CHAT_ID` | `adaptaproxy-default-chat` | Session key padrão usada quando a request não envia `metadata.adapta_session_key` |
 | `ADAPTA_BASE_URL` | `https://agent.adapta.one` | Origem da Adapta |
 | `ADAPTA_CHAT_URL` | `https://agent.adapta.one/agentic-chat` | Tela de chat usada para login e descoberta |
 | `ADAPTA_MODEL_ID` | `adapta-chat` | Modelo exposto em `/v1/models` |

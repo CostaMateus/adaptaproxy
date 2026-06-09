@@ -9,6 +9,7 @@ import { redactSecrets } from '../utils/redact.ts'
 
 interface CompletionMetadata {
   adapta_chat_id: string
+  adapta_session_key?: string
   adapta_refinement_questions?: unknown[]
 }
 
@@ -58,8 +59,15 @@ export async function chatCompletions(c: Context) {
     const requestedChatId = typeof body.metadata?.adapta_chat_id === 'string'
       ? body.metadata.adapta_chat_id
       : undefined
+    const requestedSessionKey = typeof body.metadata?.adapta_session_key === 'string'
+      ? body.metadata.adapta_session_key
+      : c.req.header('x-adapta-session-key') || config.chats.defaultChatId
+    const requestedNewChat = body.metadata?.adapta_new_chat === true ||
+      c.req.header('x-adapta-new-chat') === 'true'
     const adaptaOptions = {
       chatId: requestedChatId,
+      sessionKey: requestedSessionKey,
+      newChat: requestedNewChat,
       projectName: typeof body.metadata?.adapta_project_name === 'string'
         ? body.metadata.adapta_project_name
         : undefined,
@@ -73,6 +81,7 @@ export async function chatCompletions(c: Context) {
       const completion = await createAdaptaCompletion(prompt, adaptaOptions)
       return c.json(completionPayload(completionId, model, completion.content, prompt, {
         adapta_chat_id: completion.chatId,
+        adapta_session_key: requestedChatId ? undefined : requestedSessionKey,
         ...(completion.refinementQuestions.length
           ? { adapta_refinement_questions: completion.refinementQuestions }
           : {}),
@@ -96,7 +105,10 @@ export async function chatCompletions(c: Context) {
         object: 'chat.completion.chunk',
         created,
         model,
-        metadata: requestedChatId ? { adapta_chat_id: requestedChatId } : undefined,
+        metadata: {
+          ...(requestedChatId ? { adapta_chat_id: requestedChatId } : {}),
+          ...(!requestedChatId ? { adapta_session_key: requestedSessionKey } : {}),
+        },
         choices: [{
           index: 0,
           delta: { role: 'assistant', content: '' },
@@ -130,6 +142,7 @@ export async function chatCompletions(c: Context) {
         model,
         metadata: {
           adapta_chat_id: completion.chatId,
+          adapta_session_key: requestedChatId ? undefined : requestedSessionKey,
           ...(completion.refinementQuestions.length
             ? { adapta_refinement_questions: completion.refinementQuestions }
             : {}),
@@ -145,6 +158,7 @@ export async function chatCompletions(c: Context) {
       if (body.stream_options?.include_usage) {
         const payload = completionPayload(completionId, model, streamedContent || completion.content, prompt, {
           adapta_chat_id: completion.chatId,
+          adapta_session_key: requestedChatId ? undefined : requestedSessionKey,
           ...(completion.refinementQuestions.length
             ? { adapta_refinement_questions: completion.refinementQuestions }
             : {}),
@@ -154,7 +168,10 @@ export async function chatCompletions(c: Context) {
           object: 'chat.completion.chunk',
           created,
           model,
-          metadata: { adapta_chat_id: completion.chatId },
+          metadata: {
+            adapta_chat_id: completion.chatId,
+            adapta_session_key: requestedChatId ? undefined : requestedSessionKey,
+          },
           choices: [],
           usage: payload.usage,
         })
