@@ -6,15 +6,12 @@ import {
   listAdaptaChatSessions,
   setAdaptaChatSessionsFile,
 } from '../core/chat-sessions.ts'
-import { resolveAdaptaAccountContext } from '../services/adapta-account-resolver.ts'
 import { deleteAdaptaRemoteChat, listAdaptaRemoteChats } from '../services/adapta.ts'
 
 const app = new Hono()
 
 function accountForRequest(c: any) {
-  return resolveAdaptaAccountContext({
-    userKey: c.req.header('x-adapta-user-key') || c.req.query('userKey') || undefined,
-  })
+  return c.get('adaptaAccount')
 }
 
 app.post('/v1/adapta/chats', async c => {

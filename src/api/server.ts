@@ -7,8 +7,11 @@ import { Watchdog } from '../core/watchdog.js'
 import { app as modelsApp } from './models.js'
 import { app as chatsApp } from './chats.js'
 import { app as adaptaUsersApp } from '../routes/adapta-users.ts'
+import { app as webAuthApp } from '../routes/web-auth.ts'
 import { chatCompletions, chatCompletionsStop } from '../routes/chat.js'
 import { redactSecrets } from '../utils/redact.ts'
+import { getUserByApiKey } from '../services/auth-store.ts'
+import { accountContextFromAuthenticatedUser } from '../services/adapta-account-resolver.ts'
 
 const app = new Hono()
 
@@ -25,41 +28,56 @@ app.use('*', async (c, next) => {
   c.header('X-Response-Time', `${duration}ms`)
 })
 
-app.use('/v1/*', async (c, next) => {
-  const apiKey = process.env.API_KEY || config.apiKey
-  if (apiKey) {
-    const auth = c.req.header('Authorization')
-    if (!auth?.startsWith('Bearer ')) {
-      return c.json({ error: 'Missing or invalid Authorization header' }, 401)
-    }
-    const token = auth.slice(7)
-    if (token !== apiKey) {
-      return c.json({ error: 'Invalid API key' }, 401)
-    }
+app.use('/adaptaproxy/api/v1/*', async (c, next) => {
+  const auth = c.req.header('Authorization')
+  if (!auth?.startsWith('Bearer ')) {
+    return c.json({ error: { message: 'Missing or invalid Authorization header' } }, 401)
+  }
+  const token = auth.slice(7)
+  const authUser = getUserByApiKey(token)
+  if (!authUser) {
+    return c.json({ error: { message: 'Invalid API key' } }, 401)
+  }
+  try {
+    ;(c as any).set('adaptaproxyUser', authUser.user)
+    ;(c as any).set('adaptaAccount', accountContextFromAuthenticatedUser(authUser))
+  } catch (error: any) {
+    return c.json({
+      error: {
+        message: error.message,
+        type: error.type || 'adapta_account_login_required',
+        login_url: error.loginUrl || '/adaptaproxy/account',
+      },
+    }, error.status || 401)
   }
   await next()
 })
 
-app.route('', modelsApp)
-app.route('', chatsApp)
-app.route('', adaptaUsersApp)
-app.post('/v1/chat/completions', chatCompletions)
-app.post('/v1/chat/completions/stop', chatCompletionsStop)
+app.route('', webAuthApp)
+app.route('/adaptaproxy/api', modelsApp)
+app.route('/adaptaproxy/api', chatsApp)
+app.route('/adaptaproxy/api', adaptaUsersApp)
+app.post('/adaptaproxy/api/v1/chat/completions', chatCompletions)
+app.post('/adaptaproxy/api/v1/chat/completions/stop', chatCompletionsStop)
 
 app.get('/', (c) => {
+  return c.redirect('/adaptaproxy/login')
+})
+
+app.get('/adaptaproxy/api', (c) => {
   return c.json({
     name: 'adaptaproxy',
     status: 'ok',
     endpoints: {
-      health: '/health',
-      models: '/v1/models',
-      chatCompletions: '/v1/chat/completions',
-      adaptaChats: '/v1/adapta/chats',
+      health: '/adaptaproxy/health',
+      models: '/adaptaproxy/api/v1/models',
+      chatCompletions: '/adaptaproxy/api/v1/chat/completions',
+      adaptaChats: '/adaptaproxy/api/v1/adapta/chats',
     },
   })
 })
 
-app.get('/health', async (c) => {
+app.get('/adaptaproxy/health', async (c) => {
   const status = await watchdog?.getStatus()
   const { buildDoctorReport } = await import('../core/doctor.ts')
   const doctor = await buildDoctorReport()
@@ -80,13 +98,13 @@ app.get('/health', async (c) => {
   })
 })
 
-app.get('/doctor', async (c) => {
+app.get('/adaptaproxy/doctor', async (c) => {
   const { buildDoctorReport } = await import('../core/doctor.ts')
   const report = await buildDoctorReport()
   return c.json(report, report.status === 'unhealthy' ? 503 : 200)
 })
 
-app.get('/metrics', (c) => {
+app.get('/adaptaproxy/metrics', (c) => {
   return c.text(metrics.formatPrometheus(), {
     headers: { 'Content-Type': 'text/plain; version=0.0.4' },
   })
@@ -139,6 +157,8 @@ export async function startServer(): Promise<void> {
     await cache.close()
     const { closePlaywright } = await import('../services/playwright.js')
     await closePlaywright()
+    const { closeDatabase } = await import('../core/database.ts')
+    closeDatabase()
     server?.close()
     process.exit(0)
   }

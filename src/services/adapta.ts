@@ -13,7 +13,7 @@ import {
   getAdaptaProjectFolderById,
   getAdaptaProjectFolderByName,
   getAdaptaSessionHeaders,
-  getCachedAdaptaChatRequest,
+  getCachedAdaptaChatRequestForAccount,
   refreshAdaptaSession,
   usePlaywrightAccount,
 } from './playwright.ts'
@@ -465,17 +465,19 @@ async function buildAdaptaRequest(prompt: string, options: AdaptaRequestOptions 
   if (options.account) {
     setAdaptaChatSessionsFile(options.account.chatSessionsFile)
     await usePlaywrightAccount({
+      accountKey: options.account.userId || options.account.userKey,
       profileDir: options.account.profileDir,
       email: options.account.email,
       password: options.account.password,
     })
-    await ensureAdaptaProjectFolder(options.account.projectName).catch(error => {
+    await ensureAdaptaProjectFolder(options.account.projectName, options.account.userId || options.account.userKey).catch(error => {
       console.warn(`[Adapta] Could not ensure project "${options.account?.projectName}": ${error.message}`)
     })
   }
 
-  const captured = getCachedAdaptaChatRequest() ?? getDefaultAdaptaChatRequest()
-  const sessionHeaders = await getAdaptaSessionHeaders()
+  const accountKey = options.account?.userId || options.account?.userKey
+  const captured = getCachedAdaptaChatRequestForAccount(accountKey) ?? getDefaultAdaptaChatRequest()
+  const sessionHeaders = await getAdaptaSessionHeaders(accountKey)
   const projectFolderId = await resolveProjectFolderId(options)
   const remoteChatId = await resolveAdaptaRemoteChatId(options)
   const prepared = prepareAdaptaPayload(captured.postData, prompt, remoteChatId)
@@ -541,7 +543,7 @@ export async function createAdaptaCompletion(prompt: string, options: AdaptaRequ
     if (response.status === 401) {
       console.warn('[Adapta] Upstream returned 401. Refreshing browser session and retrying completion once...')
       await response.body?.cancel().catch(() => {})
-      await refreshAdaptaSession()
+      await refreshAdaptaSession(options.account?.userId || options.account?.userKey)
       request = await buildAdaptaRequest(prompt, options)
       response = await fetch(request.url, {
         method: request.method,
@@ -599,7 +601,7 @@ export async function createAdaptaCompletionStream(
     if (response.status === 401) {
       console.warn('[Adapta] Upstream returned 401. Refreshing browser session and retrying stream once...')
       await response.body?.cancel().catch(() => {})
-      await refreshAdaptaSession()
+      await refreshAdaptaSession(options.account?.userId || options.account?.userKey)
       request = await buildAdaptaRequest(prompt, options)
       response = await fetch(request.url, {
         method: request.method,
@@ -711,7 +713,7 @@ function extractTextDeltaFromSseLine(line: string): string {
 
 async function resolveProjectFolderId(options: AdaptaRequestOptions = {}): Promise<string | null> {
   if (options.folderId) {
-    const project = await getAdaptaProjectFolderById(options.folderId)
+    const project = await getAdaptaProjectFolderById(options.folderId, options.account?.userId || options.account?.userKey)
     if (!project) {
       throw new Error(`Adapta project folder "${options.folderId}" was not found. Remove metadata.adapta_folder_id or choose a valid folder.`)
     }
@@ -721,7 +723,7 @@ async function resolveProjectFolderId(options: AdaptaRequestOptions = {}): Promi
   const projectName = options.projectName || config.adapta.projectName
   if (!projectName) return null
 
-  const project = await getAdaptaProjectFolderByName(projectName).catch(error => {
+  const project = await getAdaptaProjectFolderByName(projectName, options.account?.userId || options.account?.userKey).catch(error => {
     if (options.projectName) throw error
     console.warn(`[Adapta] Could not resolve default project "${projectName}": ${error.message}`)
     return null
@@ -753,15 +755,16 @@ export async function listAdaptaRemoteChats(options: {
   if (options.account) {
     setAdaptaChatSessionsFile(options.account.chatSessionsFile)
     await usePlaywrightAccount({
+      accountKey: options.account.userId || options.account.userKey,
       profileDir: options.account.profileDir,
       email: options.account.email,
       password: options.account.password,
     })
-    await ensureAdaptaProjectFolder(options.account.projectName).catch(error => {
+    await ensureAdaptaProjectFolder(options.account.projectName, options.account.userId || options.account.userKey).catch(error => {
       console.warn(`[Adapta] Could not ensure project "${options.account?.projectName}": ${error.message}`)
     })
   }
-  const headers = await getAdaptaSessionHeaders()
+  const headers = await getAdaptaSessionHeaders(options.account?.userId || options.account?.userKey)
   const folderId = await resolveProjectFolderId({
     folderId: options.folderId,
     projectName: options.projectName,
@@ -809,15 +812,16 @@ export async function deleteAdaptaRemoteChat(chatId: string, options: {
   if (options.account) {
     setAdaptaChatSessionsFile(options.account.chatSessionsFile)
     await usePlaywrightAccount({
+      accountKey: options.account.userId || options.account.userKey,
       profileDir: options.account.profileDir,
       email: options.account.email,
       password: options.account.password,
     })
-    await ensureAdaptaProjectFolder(options.account.projectName).catch(error => {
+    await ensureAdaptaProjectFolder(options.account.projectName, options.account.userId || options.account.userKey).catch(error => {
       console.warn(`[Adapta] Could not ensure project "${options.account?.projectName}": ${error.message}`)
     })
   }
-  const headers = await getAdaptaSessionHeaders()
+  const headers = await getAdaptaSessionHeaders(options.account?.userId || options.account?.userKey)
   const candidates = [
     `${config.adapta.baseUrl}/api/chat/${encodeURIComponent(chatId)}/v1`,
     `${config.adapta.baseUrl}/api/chat/v1/${encodeURIComponent(chatId)}`,

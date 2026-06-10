@@ -1,24 +1,26 @@
-# Adaptaproxy
+﻿# Adaptaproxy
 
 Proxy local compatível com OpenAI para usar o chat da Adapta (`https://agent.adapta.one/agentic-chat`) via API.
 
-O v1 usa uma sessão persistente do Playwright. Você faz login manualmente uma vez, o perfil fica salvo em `adapta_profiles/`, e o servidor reutiliza cookies/headers para enviar mensagens ao endpoint interno usado pela própria UI da Adapta.
+O v1 usa perfis persistentes do Playwright por usuário. Cada usuário cria uma conta local em `/adaptaproxy/login`, conecta a própria conta ADAPTA em `/adaptaproxy/account`, gera uma API key própria e usa as rotas OpenAI-compatíveis em `/adaptaproxy/api/v1/*`.
 
 ## Status do v1
 
-- `POST /v1/chat/completions`
-- `GET /v1/models`
-- `POST /v1/adapta/chats`
-- `GET /v1/adapta/chats`
-- `GET /v1/adapta/chats/:id`
-- `DELETE /v1/adapta/chats/:id`
-- modelos de texto listados em `/v1/models`, com `GPT_55` como padrão
+- `POST /adaptaproxy/api/v1/chat/completions`
+- `GET /adaptaproxy/api/v1/models`
+- `POST /adaptaproxy/api/v1/adapta/chats`
+- `GET /adaptaproxy/api/v1/adapta/chats`
+- `GET /adaptaproxy/api/v1/adapta/chats/:id`
+- `DELETE /adaptaproxy/api/v1/adapta/chats/:id`
+- modelos de texto listados em `/adaptaproxy/api/v1/models`, com `GPT_55` como padrão
+- cadastro/login web em `/adaptaproxy/login`
+- edição de conta, login automático ADAPTA e geração de API key em `/adaptaproxy/account`
 - login manual via `npm run login`
 - modo multiusuário corporativo com perfis Playwright isolados
 - streaming SSE real quando `stream: true`
-- sessão única
+- sessões Playwright isoladas por usuário
 - sessões locais persistidas em arquivo
-- diagnóstico via `/doctor` e `npm run doctor`
+- diagnóstico via `/adaptaproxy/doctor` e `npm run doctor`
 - projeto padrão global ou por request via `metadata`
 - perguntas de refinamento em texto e em `metadata.adapta_refinement_questions`
 - listagem de chats reais da Adapta com `source=remote`
@@ -33,7 +35,23 @@ npx playwright install chromium
 cp .env.example .env
 ```
 
-Opcionalmente defina `API_KEY` no `.env`. Se definido, clientes precisam enviar `Authorization: Bearer <API_KEY>`.
+Defina `ADAPTA_CREDENTIALS_SECRET` no `.env`. Ele é usado para criptografar as senhas ADAPTA salvas no SQLite. Cada usuário deve gerar a própria API key em `/adaptaproxy/account`.
+
+## Fluxo multiusuário
+
+1. Acesse `http://localhost:3000/adaptaproxy/login`.
+2. Cadastre uma conta local com nome, email e senha local.
+3. Acesse `/adaptaproxy/account`.
+4. Informe email e senha da conta ADAPTA para o login automático.
+5. Gere uma API key.
+6. Use a API key nas rotas `/adaptaproxy/api/v1/*`.
+
+Exemplo:
+
+```bash
+curl http://localhost:3000/adaptaproxy/api/v1/models \
+  -H "Authorization: Bearer apx_sua_chave"
+```
 
 ## Login manual
 
@@ -51,7 +69,7 @@ npm run login:firefox
 npm run login:edge
 ```
 
-## Modo de conta
+## Modo legado de conta
 
 O `.env` aceita:
 
@@ -62,10 +80,10 @@ ADAPTA_PROJECT_NAME=PROXY
 
 Em `PERSONAL`, o proxy usa a conta configurada em `ADAPTA_EMAIL`/`ADAPTA_PASSWORD` ou a sessão manual salva no perfil pessoal.
 
-Em `CORPORATE`, cada request precisa identificar o usuário com `x-adapta-user-key` ou `metadata.adapta_user_key`. Antes do primeiro uso, registre o login desse usuário:
+O modo recomendado agora é usar cadastro web + API key por usuário. O modo `CORPORATE` antigo por `x-adapta-user-key` foi mantido apenas como legado interno e fica sob o prefixo `/adaptaproxy/api`.
 
 ```bash
-curl -X POST http://localhost:3000/v1/adapta/users/login \
+curl -X POST http://localhost:3000/adaptaproxy/api/v1/adapta/users/login \
   -H "Authorization: Bearer your_proxy_api_key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -75,23 +93,7 @@ curl -X POST http://localhost:3000/v1/adapta/users/login \
   }'
 ```
 
-Para `CORPORATE`, defina também `ADAPTA_CREDENTIALS_SECRET` no `.env`; ele é usado para criptografar as senhas salvas em `CORPORATE_USERS_FILE`.
-
-Chamadas corporativas:
-
-```http
-x-adapta-user-key: mateus
-```
-
-ou:
-
-```json
-{
-  "metadata": {
-    "adapta_user_key": "mateus"
-  }
-}
-```
+Para `CORPORATE`, defina também `ADAPTA_CREDENTIALS_SECRET` no `.env`.
 
 ## Executar
 
@@ -116,8 +118,8 @@ npm run doctor
 O comando valida Playwright, sessão Adapta, captura de `Authorization`, projeto configurado e persistência local de chats. O mesmo relatório está disponível em:
 
 ```text
-GET /doctor
-GET /health
+GET /adaptaproxy/doctor
+GET /adaptaproxy/health
 ```
 
 ## Exemplo com OpenAI SDK
@@ -126,8 +128,8 @@ GET /health
 import OpenAI from 'openai'
 
 const client = new OpenAI({
-  apiKey: process.env.API_KEY || 'local',
-  baseURL: 'http://localhost:3000/v1',
+  apiKey: process.env.ADAPTA_PROXY_USER_API_KEY || 'apx_sua_chave',
+  baseURL: 'http://localhost:3000/adaptaproxy/api/v1',
 })
 
 const response = await client.chat.completions.create({
@@ -145,27 +147,27 @@ console.log(response.choices[0]?.message?.content)
 Configure o endpoint customizado apontando para:
 
 ```text
-http://localhost:3000/v1
+http://localhost:3000/adaptaproxy/api/v1
 ```
 
 Use:
 
 ```text
 model: GPT_55
-apiKey: <API_KEY do .env>
+apiKey: <API key gerada em /adaptaproxy/account>
 ```
 
 Para clientes OpenAI-compatible como Continue, Cline/Roo Code e OpenAI SDK, a configuração geral é a mesma:
 
 ```ts
-baseURL: 'http://localhost:3000/v1'
+baseURL: 'http://localhost:3000/adaptaproxy/api/v1'
 model: 'GPT_55'
 ```
 
 ## Exemplo com cURL
 
 ```bash
-curl http://localhost:3000/v1/chat/completions \
+curl http://localhost:3000/adaptaproxy/api/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your_proxy_api_key" \
   -d '{
@@ -289,26 +291,26 @@ Se a Adapta pedir refinamento, o texto fica em `choices[0].message.content` e as
 Tambem existem APIs auxiliares para scripts e debug:
 
 ```bash
-curl -X POST http://localhost:3000/v1/adapta/chats \
+curl -X POST http://localhost:3000/adaptaproxy/api/v1/adapta/chats \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your_proxy_api_key" \
   -d '{ "title": "Meu chat" }'
 
-curl http://localhost:3000/v1/adapta/chats \
+curl http://localhost:3000/adaptaproxy/api/v1/adapta/chats \
   -H "Authorization: Bearer your_proxy_api_key"
 ```
 
 Para listar chats reais da Adapta, use `source=remote`:
 
 ```bash
-curl "http://localhost:3000/v1/adapta/chats?source=remote&projectName=CONSEN" \
+curl "http://localhost:3000/adaptaproxy/api/v1/adapta/chats?source=remote&projectName=CONSEN" \
   -H "Authorization: Bearer your_proxy_api_key"
 ```
 
 Para tentar excluir um chat real da Adapta:
 
 ```bash
-curl -X DELETE "http://localhost:3000/v1/adapta/chats/<chat_id>?source=remote" \
+curl -X DELETE "http://localhost:3000/adaptaproxy/api/v1/adapta/chats/<chat_id>?source=remote" \
   -H "Authorization: Bearer your_proxy_api_key"
 ```
 
@@ -320,18 +322,18 @@ A exclusão remota depende do endpoint interno atual da Adapta. Se a UI mudar, o
 | --- | --- | --- |
 | `PORT` | `3000` | Porta HTTP |
 | `HOST` | `0.0.0.0` | Host HTTP |
-| `API_KEY` | vazio | Chave opcional do proxy |
+| `API_KEY` | vazio | Segredo legado opcional; as rotas `/adaptaproxy/api/v1/*` usam API key por usuário |
 | `HEADLESS` | `true` | Inicia Playwright sem janela ao rodar o servidor |
 | `USER_DATA_DIR` | `./adapta_profiles` | Perfil persistente do navegador |
 | `CHAT_SESSIONS_FILE` | `./adapta_profiles/chat-sessions.json` | Arquivo de sessões locais de chat |
 | `ADAPTA_DEFAULT_CHAT_ID` | `adaptaproxy-default-chat` | Session key padrão usada quando a request não envia `metadata.adapta_session_key` |
 | `ADAPTA_ACCOUNT_MODE` | `PERSONAL` | `PERSONAL` usa uma conta; `CORPORATE` exige usuário por request |
-| `ADAPTA_CREDENTIALS_SECRET` | vazio | Segredo usado para criptografar senhas corporativas |
+| `ADAPTA_CREDENTIALS_SECRET` | vazio | Segredo usado para criptografar senhas ADAPTA salvas no SQLite |
 | `CORPORATE_USERS_FILE` | `./adapta_profiles/users.json` | Cadastro criptografado dos usuários corporativos |
 | `CORPORATE_SESSIONS_DIR` | `./adapta_profiles/users` | Diretório dos perfis Playwright por usuário corporativo |
 | `ADAPTA_BASE_URL` | `https://agent.adapta.one` | Origem da Adapta |
 | `ADAPTA_CHAT_URL` | `https://agent.adapta.one/agentic-chat` | Tela de chat usada para login e descoberta |
-| `ADAPTA_MODEL_ID` | `GPT_55` | Modelo padrão; `/v1/models` lista as opções suportadas pela Adapta |
+| `ADAPTA_MODEL_ID` | `GPT_55` | Modelo padrão; `/adaptaproxy/api/v1/models` lista as opções suportadas pela Adapta |
 | `ADAPTA_PROJECT_NAME` | `PROXY` | Nome do projeto/pasta validado ou criado no primeiro uso da conta |
 
 Para criar novos chats sempre dentro do projeto `nome_da_pasta`:
@@ -345,10 +347,11 @@ Se o projeto configurado não existir na Adapta, o proxy retorna erro claro em v
 ## Segurança
 
 - Não versione `.env`.
+- Não versione `data/`; ele contém o SQLite local.
 - Não versione `adapta_profiles/`; ele contém sessão do navegador.
 - Não versione `CHAT_SESSIONS_FILE` se ele estiver fora de `adapta_profiles/`.
 - Logs e erros passam por redaction básica de `Authorization`, cookies, JWTs e API keys.
-- Use `API_KEY` quando expuser o proxy para qualquer cliente fora da máquina local.
+- Use uma API key individual gerada em `/adaptaproxy/account` para cada cliente/usuário.
 
 ## Docker
 
@@ -368,3 +371,4 @@ npm test
 ## Observações
 
 A Adapta não expõe aqui uma API pública documentada para esse chat. O Adaptaproxy depende de capturar e reaproveitar o endpoint interno usado pela UI. Mudanças na UI ou no contrato interno podem exigir ajuste no detector/payload.
+

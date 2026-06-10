@@ -27,16 +27,36 @@ export interface AdaptaSessionDiagnostics {
   currentUrl: string | null
 }
 
-let context: BrowserContext | null = null
-export let activePage: Page | null = null
-let cachedChatRequest: CapturedAdaptaRequest | null = null
-let cachedProjectFolders: AdaptaProjectFolder[] | null = null
-let cachedAuthorizationHeader: string | null = null
+interface PlaywrightRuntime {
+  context: BrowserContext | null
+  activePage: Page | null
+  cachedChatRequest: CapturedAdaptaRequest | null
+  cachedProjectFolders: AdaptaProjectFolder[] | null
+  cachedAuthorizationHeader: string | null
+  currentProfileDir: string | null
+  currentCredentials: { email: string, password: string } | null
+  autoLoginPromise: Promise<void> | null
+  discoveryMutex: Mutex
+  pageOperationMutex: Mutex
+}
+
+function createRuntime(): PlaywrightRuntime {
+  return {
+    context: null,
+    activePage: null,
+    cachedChatRequest: null,
+    cachedProjectFolders: null,
+    cachedAuthorizationHeader: null,
+    currentProfileDir: null,
+    currentCredentials: null,
+    autoLoginPromise: null,
+    discoveryMutex: new Mutex(),
+    pageOperationMutex: new Mutex(),
+  }
+}
+
 let currentBrowserType: BrowserType = 'chromium'
 let currentHeadless = true
-let currentProfileDir: string | null = null
-let currentCredentials: { email: string, password: string } | null = null
-let autoLoginPromise: Promise<void> | null = null
 
 export class Mutex {
   private queue: (() => void)[] = []
@@ -63,13 +83,26 @@ export class Mutex {
   }
 }
 
-const discoveryMutex = new Mutex()
-const pageOperationMutex = new Mutex()
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
 function resolveConfiguredBrowserType(): BrowserType {
   return (process.env.BROWSER as BrowserType | undefined) || currentBrowserType || 'chromium'
 }
+
+const defaultRuntime = createRuntime()
+const accountRuntimes = new Map<string, PlaywrightRuntime>()
+
+function runtime(accountKey?: string): PlaywrightRuntime {
+  if (!accountKey) return defaultRuntime
+  let rt = accountRuntimes.get(accountKey)
+  if (!rt) {
+    rt = createRuntime()
+    accountRuntimes.set(accountKey, rt)
+  }
+  return rt
+}
+
+export let activePage: Page | null = null
 
 async function tryCredentialLogin(page: Page, email: string, password: string): Promise<void> {
   const emailInput = page.locator([
@@ -126,7 +159,7 @@ function getBrowser(browserType: BrowserType) {
   }
 }
 
-function profilePath(profileDir = currentProfileDir): string {
+function profilePath(profileDir = defaultRuntime.currentProfileDir): string {
   return path.resolve(profileDir || config.browser.userDataDir, '_default')
 }
 
@@ -161,15 +194,16 @@ async function hasAuthState(page: Page): Promise<boolean> {
   return Boolean(await getLocalAuthValue(page))
 }
 
-async function captureAuthorizationHeader(page: Page): Promise<string> {
-  if (cachedAuthorizationHeader) return cachedAuthorizationHeader
+async function captureAuthorizationHeader(page: Page, accountKey?: string): Promise<string> {
+  const rt = runtime(accountKey)
+  if (rt.cachedAuthorizationHeader) return rt.cachedAuthorizationHeader
 
-  const release = await pageOperationMutex.acquire()
+  const release = await rt.pageOperationMutex.acquire()
   try {
-    const existingAuth = await waitForAuthorizationHeader(page, false)
+    const existingAuth = await waitForAuthorizationHeader(page, false, accountKey)
     if (existingAuth) return existingAuth
 
-    const authPromise = waitForAuthorizationHeader(page, true)
+    const authPromise = waitForAuthorizationHeader(page, true, accountKey)
     await page.goto(config.adapta.chatUrl, {
       waitUntil: 'domcontentloaded',
       timeout: config.timeouts.navigation,
@@ -183,7 +217,8 @@ async function captureAuthorizationHeader(page: Page): Promise<string> {
   }
 }
 
-async function waitForAuthorizationHeader(page: Page, wait: boolean): Promise<string> {
+async function waitForAuthorizationHeader(page: Page, wait: boolean, accountKey?: string): Promise<string> {
+  const rt = runtime(accountKey)
   const capture = new Promise<string>((resolve, reject) => {
     const timeout = setTimeout(() => {
       page.off('request', onRequest)
@@ -201,7 +236,7 @@ async function waitForAuthorizationHeader(page: Page, wait: boolean): Promise<st
 
       clearTimeout(timeout)
       page.off('request', onRequest)
-      cachedAuthorizationHeader = authorization
+      rt.cachedAuthorizationHeader = authorization
       resolve(authorization)
     }
 
@@ -285,7 +320,11 @@ function normalizeHeaders(headers: Record<string, string>): Record<string, strin
 }
 
 export function getCachedAdaptaChatRequest(): CapturedAdaptaRequest | null {
-  return cachedChatRequest
+  return defaultRuntime.cachedChatRequest
+}
+
+export function getCachedAdaptaChatRequestForAccount(accountKey?: string): CapturedAdaptaRequest | null {
+  return runtime(accountKey).cachedChatRequest
 }
 
 export function getDefaultAdaptaChatRequest(): CapturedAdaptaRequest {
@@ -316,36 +355,37 @@ export function getDefaultAdaptaChatRequest(): CapturedAdaptaRequest {
   }
 }
 
-export async function getAdaptaProjectFolderByName(name: string): Promise<AdaptaProjectFolder | null> {
+export async function getAdaptaProjectFolderByName(name: string, accountKey?: string): Promise<AdaptaProjectFolder | null> {
   const normalizedName = name.trim().toLowerCase()
   if (!normalizedName) return null
 
-  const folders = await getAdaptaProjectFolders()
+  const folders = await getAdaptaProjectFolders(accountKey)
   return folders.find(folder => folder.name.trim().toLowerCase() === normalizedName) || null
 }
 
-export async function getAdaptaProjectFolderById(id: string): Promise<AdaptaProjectFolder | null> {
+export async function getAdaptaProjectFolderById(id: string, accountKey?: string): Promise<AdaptaProjectFolder | null> {
   const normalizedId = id.trim()
   if (!normalizedId) return null
 
-  const folders = await getAdaptaProjectFolders()
+  const folders = await getAdaptaProjectFolders(accountKey)
   return folders.find(folder => folder.id === normalizedId) || null
 }
 
-export async function listAdaptaProjectFolders(): Promise<AdaptaProjectFolder[]> {
-  return getAdaptaProjectFolders()
+export async function listAdaptaProjectFolders(accountKey?: string): Promise<AdaptaProjectFolder[]> {
+  return getAdaptaProjectFolders(accountKey)
 }
 
-export async function ensureAdaptaProjectFolder(name: string): Promise<AdaptaProjectFolder | null> {
+export async function ensureAdaptaProjectFolder(name: string, accountKey?: string): Promise<AdaptaProjectFolder | null> {
+  const rt = runtime(accountKey)
   const normalizedName = name.trim()
   if (!normalizedName) return null
 
-  await getAdaptaSessionHeaders()
-  const existing = await getAdaptaProjectFolderByName(normalizedName)
+  await getAdaptaSessionHeaders(accountKey)
+  const existing = await getAdaptaProjectFolderByName(normalizedName, accountKey)
   if (existing) return existing
-  if (!activePage) throw new Error('Playwright not initialized')
+  if (!rt.activePage) throw new Error('Playwright not initialized')
 
-  const headers = await getAdaptaSessionHeaders()
+  const headers = await getAdaptaSessionHeaders(accountKey)
   const response = await fetch(`${config.adapta.baseUrl}/api/folders/v2`, {
     method: 'POST',
     headers,
@@ -355,7 +395,7 @@ export async function ensureAdaptaProjectFolder(name: string): Promise<AdaptaPro
   if (!response.ok) {
     throw new Error(`Could not create Adapta project "${normalizedName}": ${response.status} ${response.statusText} - ${rawText.slice(0, 300)}`)
   }
-  cachedProjectFolders = null
+  rt.cachedProjectFolders = null
   const payload = JSON.parse(rawText)
   const folder = payload?.data || payload
   if (typeof folder?.id !== 'string') {
@@ -364,15 +404,16 @@ export async function ensureAdaptaProjectFolder(name: string): Promise<AdaptaPro
   return { id: folder.id, name: folder.name || normalizedName }
 }
 
-async function getAdaptaProjectFolders(): Promise<AdaptaProjectFolder[]> {
-  if (cachedProjectFolders) return cachedProjectFolders
-  if (!activePage) throw new Error('Playwright not initialized')
+async function getAdaptaProjectFolders(accountKey?: string): Promise<AdaptaProjectFolder[]> {
+  const rt = runtime(accountKey)
+  if (rt.cachedProjectFolders) return rt.cachedProjectFolders
+  if (!rt.activePage) throw new Error('Playwright not initialized')
 
-  const release = await pageOperationMutex.acquire()
+  const release = await rt.pageOperationMutex.acquire()
   try {
-    if (cachedProjectFolders) return cachedProjectFolders
+    if (rt.cachedProjectFolders) return rt.cachedProjectFolders
 
-  const page = activePage
+  const page = rt.activePage
   const responsePromise = page.waitForResponse(response =>
     response.url().includes('/api/folders/v2') &&
     response.url().includes('type=CHATS') &&
@@ -396,7 +437,7 @@ async function getAdaptaProjectFolders(): Promise<AdaptaProjectFolder[]> {
     .filter((folder: any) => typeof folder?.id === 'string' && typeof folder?.name === 'string')
     .map((folder: any) => ({ id: folder.id, name: folder.name }))
 
-  cachedProjectFolders = folders
+  rt.cachedProjectFolders = folders
   return folders
   } finally {
     release()
@@ -407,12 +448,13 @@ export async function initPlaywright(headless = true, browserType: BrowserType =
   if (process.env.TEST_MOCK_PLAYWRIGHT) return
   currentHeadless = headless
   currentBrowserType = browserType
-  if (context && activePage) return
+  const rt = defaultRuntime
+  if (rt.context && rt.activePage) return
 
   const { engine, channel } = getBrowser(browserType)
   console.log(`[Playwright] Launching ${browserType} with profile ${profilePath()}`)
 
-  context = await engine.launchPersistentContext(profilePath(), {
+  rt.context = await engine.launchPersistentContext(profilePath(rt.currentProfileDir), {
     headless,
     channel,
     userAgent: config.browser.userAgent,
@@ -420,12 +462,13 @@ export async function initPlaywright(headless = true, browserType: BrowserType =
     args: ['--disable-blink-features=AutomationControlled', ...config.browser.args],
   })
 
-  await context.addInitScript(() => {
+  await rt.context.addInitScript(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
   })
 
-  activePage = await context.newPage()
-  await activePage.goto(config.adapta.chatUrl, {
+  rt.activePage = await rt.context.newPage()
+  if (rt === defaultRuntime) activePage = rt.activePage
+  await rt.activePage.goto(config.adapta.chatUrl, {
     waitUntil: 'domcontentloaded',
     timeout: config.timeouts.navigation,
   }).catch(err => {
@@ -439,15 +482,19 @@ export async function initPlaywright(headless = true, browserType: BrowserType =
 
 export async function closePlaywright(): Promise<void> {
   if (process.env.TEST_MOCK_PLAYWRIGHT) return
-  cachedChatRequest = null
-  cachedProjectFolders = null
-  cachedAuthorizationHeader = null
-  await context?.close()
-  context = null
+  for (const rt of [defaultRuntime, ...accountRuntimes.values()]) {
+    rt.cachedChatRequest = null
+    rt.cachedProjectFolders = null
+    rt.cachedAuthorizationHeader = null
+    await rt.context?.close()
+    rt.context = null
+    rt.activePage = null
+  }
   activePage = null
 }
 
 export async function usePlaywrightAccount(options: {
+  accountKey?: string
   profileDir: string
   headless?: boolean
   browserType?: BrowserType
@@ -455,27 +502,75 @@ export async function usePlaywrightAccount(options: {
   password?: string
 }): Promise<void> {
   if (process.env.TEST_MOCK_PLAYWRIGHT) return
+  const rt = runtime(options.accountKey)
   const nextProfileDir = path.resolve(options.profileDir)
   const nextHeadless = options.headless ?? currentHeadless
   const nextBrowserType = options.browserType || resolveConfiguredBrowserType()
 
-  currentCredentials = options.email && options.password
+  rt.currentCredentials = options.email && options.password
     ? { email: options.email, password: options.password }
     : null
 
   if (
-    context &&
-    activePage &&
-    currentProfileDir === nextProfileDir &&
+    rt.context &&
+    rt.activePage &&
+    rt.currentProfileDir === nextProfileDir &&
     currentHeadless === nextHeadless &&
     currentBrowserType === nextBrowserType
   ) {
     return
   }
 
-  await closePlaywright()
-  currentProfileDir = nextProfileDir
-  await initPlaywright(nextHeadless, nextBrowserType)
+  await closePlaywrightAccount(options.accountKey)
+  rt.currentProfileDir = nextProfileDir
+  await initPlaywrightForRuntime(rt, nextHeadless, nextBrowserType, options.accountKey)
+}
+
+async function initPlaywrightForRuntime(
+  rt: PlaywrightRuntime,
+  headless = true,
+  browserType: BrowserType = 'chromium',
+  accountKey?: string,
+): Promise<void> {
+  if (process.env.TEST_MOCK_PLAYWRIGHT) return
+  currentHeadless = headless
+  currentBrowserType = browserType
+  if (rt.context && rt.activePage) return
+
+  const { engine, channel } = getBrowser(browserType)
+  console.log(`[Playwright] Launching ${browserType} for ${accountKey || 'default'} with profile ${profilePath(rt.currentProfileDir)}`)
+
+  rt.context = await engine.launchPersistentContext(profilePath(rt.currentProfileDir), {
+    headless,
+    channel,
+    userAgent: config.browser.userAgent,
+    ignoreDefaultArgs: ['--enable-automation'],
+    args: ['--disable-blink-features=AutomationControlled', ...config.browser.args],
+  })
+
+  await rt.context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
+  })
+
+  rt.activePage = await rt.context.newPage()
+  if (rt === defaultRuntime) activePage = rt.activePage
+  await rt.activePage.goto(config.adapta.chatUrl, {
+    waitUntil: 'domcontentloaded',
+    timeout: config.timeouts.navigation,
+  }).catch(err => {
+    console.warn(`[Playwright] Initial navigation failed for ${accountKey || 'default'}: ${err.message}`)
+  })
+}
+
+async function closePlaywrightAccount(accountKey?: string): Promise<void> {
+  const rt = runtime(accountKey)
+  rt.cachedChatRequest = null
+  rt.cachedProjectFolders = null
+  rt.cachedAuthorizationHeader = null
+  await rt.context?.close()
+  rt.context = null
+  rt.activePage = null
+  if (rt === defaultRuntime) activePage = null
 }
 
 async function runNpmLogin(): Promise<void> {
@@ -498,17 +593,18 @@ async function runNpmLogin(): Promise<void> {
   })
 }
 
-async function runCredentialLogin(): Promise<void> {
-  if (!currentCredentials) {
+async function runCredentialLogin(accountKey?: string): Promise<void> {
+  const rt = runtime(accountKey)
+  if (!rt.currentCredentials) {
     await runNpmLogin()
     return
   }
 
   const { context: loginContext, page } = await launchManualLogin(resolveConfiguredBrowserType(), {
-    profileDir: currentProfileDir || undefined,
+    profileDir: rt.currentProfileDir || undefined,
   })
   try {
-    await tryCredentialLogin(page, currentCredentials.email, currentCredentials.password)
+    await tryCredentialLogin(page, rt.currentCredentials.email, rt.currentCredentials.password)
       .catch(error => console.warn(`[Playwright] Credential login did not complete automatically: ${error.message}`))
     await waitForManualLogin(page)
   } finally {
@@ -516,80 +612,85 @@ async function runCredentialLogin(): Promise<void> {
   }
 }
 
-async function clearStoredAuthState(): Promise<void> {
-  if (!activePage || !context) return
+async function clearStoredAuthState(accountKey?: string): Promise<void> {
+  const rt = runtime(accountKey)
+  if (!rt.activePage || !rt.context) return
 
-  await context.clearCookies().catch(() => {})
-  await activePage.goto(config.adapta.baseUrl, {
+  await rt.context.clearCookies().catch(() => {})
+  await rt.activePage.goto(config.adapta.baseUrl, {
     waitUntil: 'domcontentloaded',
     timeout: config.timeouts.navigation,
   }).catch(() => {})
-  await activePage.evaluate(() => {
+  await rt.activePage.evaluate(() => {
     localStorage.clear()
     sessionStorage.clear()
   }).catch(() => {})
 }
 
-async function ensureAuthenticatedSession(forceRefresh = false): Promise<void> {
+async function ensureAuthenticatedSession(forceRefresh = false, accountKey?: string): Promise<void> {
   if (process.env.TEST_MOCK_PLAYWRIGHT) return
-  if (!forceRefresh && await hasValidSession().catch(() => false)) return
+  const rt = runtime(accountKey)
+  if (!forceRefresh && await hasValidSession(accountKey).catch(() => false)) return
 
-  if (!autoLoginPromise) {
-    autoLoginPromise = (async () => {
+  if (!rt.autoLoginPromise) {
+    rt.autoLoginPromise = (async () => {
       console.warn(forceRefresh
         ? '[Playwright] Adapta token was rejected upstream. Refreshing login automatically...'
         : '[Playwright] Adapta session is not authenticated. Running `npm run login` automatically...')
       if (forceRefresh) {
-        cachedAuthorizationHeader = null
-        cachedProjectFolders = null
-        cachedChatRequest = null
-        await clearStoredAuthState()
+        rt.cachedAuthorizationHeader = null
+        rt.cachedProjectFolders = null
+        rt.cachedChatRequest = null
+        await clearStoredAuthState(accountKey)
       }
-      await closePlaywright()
-      await runCredentialLogin()
-      await initPlaywright(currentHeadless, resolveConfiguredBrowserType())
-      if (!(await hasValidSession())) {
+      await closePlaywrightAccount(accountKey)
+      await runCredentialLogin(accountKey)
+      await initPlaywrightForRuntime(rt, currentHeadless, resolveConfiguredBrowserType(), accountKey)
+      if (!(await hasValidSession(accountKey))) {
         throw new Error('Adapta session is not authenticated after automatic login.')
       }
       console.log('[Playwright] Automatic Adapta login completed.')
     })().finally(() => {
-      autoLoginPromise = null
+      rt.autoLoginPromise = null
     })
   }
 
-  await autoLoginPromise
+  await rt.autoLoginPromise
 }
 
-export async function refreshAdaptaSession(): Promise<void> {
-  await ensureAuthenticatedSession(true)
+export async function refreshAdaptaSession(accountKey?: string): Promise<void> {
+  await ensureAuthenticatedSession(true, accountKey)
 }
 
-export async function hasValidSession(): Promise<boolean> {
+export async function hasValidSession(accountKey?: string): Promise<boolean> {
   if (process.env.TEST_MOCK_PLAYWRIGHT) return true
-  if (!activePage) return false
+  const page = runtime(accountKey).activePage
+  if (!page) return false
 
-  const url = activePage.url()
-  return !url.includes('/sign-in') && !url.includes('/login') && await hasAuthState(activePage)
+  const url = page.url()
+  return !url.includes('/sign-in') && !url.includes('/login') && await hasAuthState(page)
 }
 
-export async function getAdaptaSessionHeaders(): Promise<Record<string, string>> {
+export async function getAdaptaSessionHeaders(accountKey?: string): Promise<Record<string, string>> {
   if (process.env.TEST_MOCK_PLAYWRIGHT) {
     return { cookie: 'token=mock', 'user-agent': 'mock' }
   }
-  if (!activePage) throw new Error('Playwright not initialized')
+  let page = runtime(accountKey).activePage
+  if (!page) throw new Error('Playwright not initialized')
 
-  if (!(await hasValidSession())) {
-    await ensureAuthenticatedSession()
+  if (!(await hasValidSession(accountKey))) {
+    await ensureAuthenticatedSession(false, accountKey)
   }
-  if (!activePage) throw new Error('Playwright not initialized')
+  page = runtime(accountKey).activePage
+  if (!page) throw new Error('Playwright not initialized')
 
-  const cookieHeader = (await activePage.context().cookies(config.adapta.baseUrl))
+  const cookieHeader = (await page.context().cookies(config.adapta.baseUrl))
     .map(cookie => `${cookie.name}=${cookie.value}`)
     .join('; ')
 
-  const localAuthValue = await getLocalAuthValue(activePage)
+  const localAuthValue = await getLocalAuthValue(page)
   const headers: Record<string, string> = {
-    'user-agent': await activePage.evaluate(() => navigator.userAgent),
+    'user-agent': await page.evaluate(() => navigator.userAgent),
     referer: config.adapta.chatUrl,
     origin: config.adapta.baseUrl,
     accept: 'application/json, text/plain, */*',
@@ -603,7 +704,7 @@ export async function getAdaptaSessionHeaders(): Promise<Record<string, string>>
   }
 
   if (!headers.authorization && (cookieHeader || localAuthValue)) {
-    headers.authorization = await captureAuthorizationHeader(activePage)
+    headers.authorization = await captureAuthorizationHeader(page, accountKey)
   }
 
   if (!headers.authorization && !cookieHeader && !localAuthValue) {
@@ -613,7 +714,7 @@ export async function getAdaptaSessionHeaders(): Promise<Record<string, string>>
   return headers
 }
 
-export async function getAdaptaSessionDiagnostics(): Promise<AdaptaSessionDiagnostics> {
+export async function getAdaptaSessionDiagnostics(accountKey?: string): Promise<AdaptaSessionDiagnostics> {
   if (process.env.TEST_MOCK_PLAYWRIGHT) {
     return {
       initialized: true,
@@ -626,31 +727,32 @@ export async function getAdaptaSessionDiagnostics(): Promise<AdaptaSessionDiagno
     }
   }
 
+  const rt = runtime(accountKey)
   const diagnostics: AdaptaSessionDiagnostics = {
-    initialized: Boolean(activePage),
+    initialized: Boolean(rt.activePage),
     authenticated: false,
-    authorizationCaptured: Boolean(cachedAuthorizationHeader),
+    authorizationCaptured: Boolean(rt.cachedAuthorizationHeader),
     projectName: config.adapta.projectName || null,
     projectFound: config.adapta.projectName ? false : null,
     projectId: null,
-    currentUrl: activePage?.url() || null,
+    currentUrl: rt.activePage?.url() || null,
   }
 
-  if (!activePage) return diagnostics
+  if (!rt.activePage) return diagnostics
 
-  diagnostics.authenticated = await hasValidSession().catch(() => false)
+  diagnostics.authenticated = await hasValidSession(accountKey).catch(() => false)
   if (diagnostics.authenticated) {
-    const headers = await getAdaptaSessionHeaders().catch((): Record<string, string> => ({}))
+    const headers = await getAdaptaSessionHeaders(accountKey).catch((): Record<string, string> => ({}))
     diagnostics.authorizationCaptured = Boolean(headers.authorization)
   }
 
   if (diagnostics.authenticated && config.adapta.projectName) {
-    const project = await getAdaptaProjectFolderByName(config.adapta.projectName).catch(() => null)
+    const project = await getAdaptaProjectFolderByName(config.adapta.projectName, accountKey).catch(() => null)
     diagnostics.projectFound = Boolean(project)
     diagnostics.projectId = project?.id || null
   }
 
-  diagnostics.currentUrl = activePage.url()
+  diagnostics.currentUrl = rt.activePage.url()
   return diagnostics
 }
 
@@ -659,7 +761,7 @@ export async function launchManualLogin(
   options: { profileDir?: string } = {},
 ): Promise<{ context: BrowserContext, page: Page }> {
   const { engine, channel } = getBrowser(browserType)
-  const loginContext = await engine.launchPersistentContext(profilePath(options.profileDir || currentProfileDir), {
+  const loginContext = await engine.launchPersistentContext(profilePath(options.profileDir || defaultRuntime.currentProfileDir), {
     headless: false,
     channel,
     userAgent: config.browser.userAgent,
@@ -692,10 +794,21 @@ export async function loginWithCredentials(options: {
   password: string
   browserType?: BrowserType
 }): Promise<void> {
-  currentProfileDir = path.resolve(options.profileDir)
-  currentCredentials = { email: options.email, password: options.password }
+  await loginWithCredentialsForAccount({ ...options })
+}
+
+export async function loginWithCredentialsForAccount(options: {
+  accountKey?: string
+  profileDir: string
+  email: string
+  password: string
+  browserType?: BrowserType
+}): Promise<void> {
+  const rt = runtime(options.accountKey)
+  rt.currentProfileDir = path.resolve(options.profileDir)
+  rt.currentCredentials = { email: options.email, password: options.password }
   const { context: loginContext, page } = await launchManualLogin(options.browserType || resolveConfiguredBrowserType(), {
-    profileDir: currentProfileDir,
+    profileDir: rt.currentProfileDir,
   })
   try {
     await tryCredentialLogin(page, options.email, options.password)
@@ -706,7 +819,7 @@ export async function loginWithCredentials(options: {
   }
 }
 
-export async function discoverAdaptaChatRequest(prompt: string): Promise<CapturedAdaptaRequest> {
+export async function discoverAdaptaChatRequest(prompt: string, accountKey?: string): Promise<CapturedAdaptaRequest> {
   if (process.env.TEST_MOCK_PLAYWRIGHT) {
     return {
       url: `${config.adapta.baseUrl}/api/chat`,
@@ -716,24 +829,25 @@ export async function discoverAdaptaChatRequest(prompt: string): Promise<Capture
     }
   }
 
-  const release = await discoveryMutex.acquire()
+  const rt = runtime(accountKey)
+  const release = await rt.discoveryMutex.acquire()
   try {
-    if (cachedChatRequest) return cachedChatRequest
-    if (!activePage) throw new Error('Playwright not initialized')
+    if (rt.cachedChatRequest) return rt.cachedChatRequest
+    if (!rt.activePage) throw new Error('Playwright not initialized')
 
-    await activePage.goto(config.adapta.chatUrl, {
+    await rt.activePage.goto(config.adapta.chatUrl, {
       waitUntil: 'domcontentloaded',
       timeout: config.timeouts.navigation,
     })
 
-    if (!(await hasValidSession())) {
-      await ensureAuthenticatedSession()
+    if (!(await hasValidSession(accountKey))) {
+      await ensureAuthenticatedSession(false, accountKey)
     }
-    if (!activePage) throw new Error('Playwright not initialized')
+    if (!rt.activePage) throw new Error('Playwright not initialized')
 
-    const page = activePage
+    const page = rt.activePage
     if (config.adapta.projectName) {
-      await selectProjectFolderInUi(page, config.adapta.projectName)
+      await selectProjectFolderInUi(page, config.adapta.projectName, accountKey)
     }
 
     let onRoute: ((route: Route, request: Request) => Promise<void>) | undefined
@@ -760,7 +874,7 @@ export async function discoverAdaptaChatRequest(prompt: string): Promise<Capture
           postData: parsePostData(request),
         }
 
-        cachedChatRequest = req
+        rt.cachedChatRequest = req
         console.log(`[Playwright] Captured Adapta chat endpoint: ${req.method} ${req.url}`)
         await route.abort('aborted').catch(() => {})
         resolve(req)
@@ -833,8 +947,8 @@ async function submitPromptThroughUi(page: Page, prompt: string): Promise<void> 
   await page.keyboard.press('Enter')
 }
 
-async function selectProjectFolderInUi(page: Page, projectName: string): Promise<void> {
-  const project = await getAdaptaProjectFolderByName(projectName)
+async function selectProjectFolderInUi(page: Page, projectName: string, accountKey?: string): Promise<void> {
+  const project = await getAdaptaProjectFolderByName(projectName, accountKey)
   if (!project) {
     throw new Error(`Adapta project "${projectName}" was not found. Clear ADAPTA_PROJECT_NAME to use the default Chats menu.`)
   }

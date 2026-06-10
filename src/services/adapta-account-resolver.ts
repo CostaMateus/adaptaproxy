@@ -6,18 +6,36 @@ import {
   getCorporateUser,
   normalizeAdaptaUserKey,
 } from './adapta-user-store.ts'
+import {
+  AdaptaAccount,
+  LocalUser,
+  decryptAdaptaPassword,
+  userChatSessionsFile,
+} from './auth-store.ts'
 
 export type AdaptaAccountMode = 'PERSONAL' | 'CORPORATE'
 
 export interface AdaptaAccountContext {
   mode: AdaptaAccountMode
   userKey: string
+  userId?: string
   profileDir: string
   chatSessionsFile: string
   email: string
   password: string
   projectName: string
   projectId?: string
+}
+
+export class AdaptaAccountLoginRequiredError extends Error {
+  readonly status = 401
+  readonly type = 'adapta_account_login_required'
+  readonly loginUrl = '/adaptaproxy/account'
+
+  constructor() {
+    super('Sua conta ADAPTA precisa ser conectada ou atualizada.')
+    this.name = 'AdaptaAccountLoginRequiredError'
+  }
 }
 
 export class AdaptaUserRequiredError extends Error {
@@ -70,5 +88,24 @@ export function resolveAdaptaAccountContext(options: { userKey?: string } = {}):
     password: decryptCorporatePassword(user.encryptedPassword),
     projectName: user.projectName || config.adapta.projectName,
     projectId: user.projectId,
+  }
+}
+
+export function accountContextFromAuthenticatedUser(input: {
+  user: LocalUser
+  adaptaAccount: AdaptaAccount | null
+}): AdaptaAccountContext {
+  if (!input.adaptaAccount) throw new AdaptaAccountLoginRequiredError()
+
+  return {
+    mode: 'CORPORATE',
+    userKey: input.user.id,
+    userId: input.user.id,
+    profileDir: input.adaptaAccount.profileDir,
+    chatSessionsFile: userChatSessionsFile(input.user.id),
+    email: input.adaptaAccount.adaptaEmail,
+    password: decryptAdaptaPassword(input.adaptaAccount.encryptedAdaptaPassword),
+    projectName: input.adaptaAccount.projectName || config.adapta.projectName,
+    projectId: input.adaptaAccount.projectId || undefined,
   }
 }

@@ -4,7 +4,6 @@ import { v4 as uuidv4 } from 'uuid'
 import { config } from '../core/config.ts'
 import { metrics } from '../core/metrics.js'
 import { createAdaptaCompletion, createAdaptaCompletionStream, openAiMessagesToPrompt } from '../services/adapta.ts'
-import { resolveAdaptaAccountContext } from '../services/adapta-account-resolver.ts'
 import { OpenAIRequest } from '../utils/types.ts'
 import { redactSecrets } from '../utils/redact.ts'
 
@@ -57,10 +56,7 @@ export async function chatCompletions(c: Context) {
     }
 
     const prompt = openAiMessagesToPrompt(messages)
-    const requestedUserKey = typeof body.metadata?.adapta_user_key === 'string'
-      ? body.metadata.adapta_user_key
-      : c.req.header('x-adapta-user-key') || undefined
-    const account = resolveAdaptaAccountContext({ userKey: requestedUserKey })
+    const account = c.get('adaptaAccount')
     const requestedChatId = typeof body.metadata?.adapta_chat_id === 'string'
       ? body.metadata.adapta_chat_id
       : undefined

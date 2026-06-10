@@ -13,6 +13,26 @@ import {
   replacePromptInPayload,
 } from '../services/adapta.ts'
 import { redactSecrets } from '../utils/redact.ts'
+import { createUser, generateApiKeyForUser, saveAdaptaAccount } from '../services/auth-store.ts'
+
+function createTestAuthHeaders(): Record<string, string> {
+  process.env.TEST_MOCK_PLAYWRIGHT = '1'
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`
+  const user = createUser({
+    name: 'Test User',
+    email: `test-${suffix}@example.com`,
+    password: 'local-password',
+  })
+  saveAdaptaAccount({
+    userId: user.id,
+    adaptaEmail: `adapta-${suffix}@example.com`,
+    adaptaPassword: 'adapta-password',
+  })
+  const apiKey = generateApiKeyForUser(user.id)
+  return {
+    Authorization: `Bearer ${apiKey}`,
+  }
+}
 
 test('converts OpenAI messages into an Adapta prompt', () => {
   const prompt = openAiMessagesToPrompt([
@@ -186,7 +206,7 @@ test('persists Adapta session key to remote chat id mapping', () => {
   assert.equal(getAdaptaChatSessionByKey(key)?.remoteChatId, 'remote-chat-2')
 })
 
-test('/v1/models lists Adapta models with GPT_55 as default', async () => {
+test('/adaptaproxy/api/v1/models lists Adapta models with GPT_55 as default', async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = (async () => new Response(JSON.stringify({
     data: {
@@ -208,7 +228,9 @@ test('/v1/models lists Adapta models with GPT_55 as default', async () => {
   }))) as typeof fetch
 
   try {
-    const response = await app.request('/v1/models')
+    const response = await app.request('/adaptaproxy/api/v1/models', {
+      headers: createTestAuthHeaders(),
+    })
     assert.equal(response.status, 200)
 
     const body = await response.json() as any
@@ -221,11 +243,12 @@ test('/v1/models lists Adapta models with GPT_55 as default', async () => {
   }
 })
 
-test('/v1/adapta/chats creates, lists, reads, and deletes chat sessions', async () => {
-  const createResponse = await app.request('/v1/adapta/chats', {
+test('/adaptaproxy/api/v1/adapta/chats creates, lists, reads, and deletes chat sessions', async () => {
+  const authHeaders = createTestAuthHeaders()
+  const createResponse = await app.request('/adaptaproxy/api/v1/adapta/chats', {
     method: 'POST',
     body: JSON.stringify({ id: 'chat-test', title: 'Test chat' }),
-    headers: { 'Content-Type': 'application/json' },
+    headers: { ...authHeaders, 'Content-Type': 'application/json' },
   })
   assert.equal(createResponse.status, 201)
 
@@ -233,22 +256,25 @@ test('/v1/adapta/chats creates, lists, reads, and deletes chat sessions', async 
   assert.equal(created.id, 'chat-test')
   assert.equal(created.title, 'Test chat')
 
-  const listResponse = await app.request('/v1/adapta/chats')
+  const listResponse = await app.request('/adaptaproxy/api/v1/adapta/chats', { headers: authHeaders })
   const list = await listResponse.json() as any
   assert.ok(list.data.some((chat: any) => chat.id === 'chat-test'))
 
-  const getResponse = await app.request('/v1/adapta/chats/chat-test')
+  const getResponse = await app.request('/adaptaproxy/api/v1/adapta/chats/chat-test', { headers: authHeaders })
   assert.equal(getResponse.status, 200)
 
-  const deleteResponse = await app.request('/v1/adapta/chats/chat-test', { method: 'DELETE' })
+  const deleteResponse = await app.request('/adaptaproxy/api/v1/adapta/chats/chat-test', {
+    method: 'DELETE',
+    headers: authHeaders,
+  })
   const deleted = await deleteResponse.json() as any
   assert.equal(deleted.deleted, true)
 })
 
-test('/doctor reports mock Adapta diagnostics', async () => {
+test('/adaptaproxy/doctor reports mock Adapta diagnostics', async () => {
   process.env.TEST_MOCK_PLAYWRIGHT = '1'
   try {
-    const response = await app.request('/doctor')
+    const response = await app.request('/adaptaproxy/doctor')
     assert.equal(response.status, 200)
 
     const body = await response.json() as any
