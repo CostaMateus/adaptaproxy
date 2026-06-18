@@ -25,7 +25,8 @@ O v1 usa perfis persistentes do Playwright por usuário. Cada usuário cria uma 
 - perguntas de refinamento em texto e em `metadata.adapta_refinement_questions`
 - listagem de chats reais da Adapta com `source=remote`
 
-Ainda não há suporte para tools, anexos, reasoning ou cancelamento upstream.
+Ainda não há suporte para tools OpenAI-compatible, anexos ou cancelamento upstream.
+Eventos upstream `reasoning-delta` são expostos como `reasoning_content` nas respostas OpenAI-compatible.
 
 ## Instalação
 

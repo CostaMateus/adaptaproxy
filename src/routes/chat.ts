@@ -26,7 +26,14 @@ function estimateTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4))
 }
 
-function completionPayload(id: string, model: string, content: string, prompt: string, metadata: CompletionMetadata) {
+function completionPayload(
+  id: string,
+  model: string,
+  content: string,
+  prompt: string,
+  metadata: CompletionMetadata,
+  reasoningContent?: string,
+) {
   const promptTokens = estimateTokens(prompt)
   const completionTokens = estimateTokens(content)
 
@@ -40,6 +47,7 @@ function completionPayload(id: string, model: string, content: string, prompt: s
       message: {
         role: 'assistant',
         content,
+        ...(reasoningContent ? { reasoning_content: reasoningContent } : {}),
       },
       logprobs: null,
       finish_reason: 'stop',
@@ -109,7 +117,7 @@ export async function chatCompletions(c: Context) {
         ...(completion.refinementQuestions.length
           ? { adapta_refinement_questions: completion.refinementQuestions }
           : {}),
-      }))
+      }, completion.reasoningContent))
     }
 
     c.header('Content-Type', 'text/event-stream')
@@ -120,6 +128,7 @@ export async function chatCompletions(c: Context) {
       const created = Math.floor(Date.now() / 1000)
       let streamChatId = requestedChatId || ''
       let streamedContent = ''
+      let streamedReasoningContent = ''
       const writeEvent = async (data: unknown) => {
         await writer.write(`data: ${JSON.stringify(data)}\n\n`)
       }
@@ -141,8 +150,12 @@ export async function chatCompletions(c: Context) {
         }],
       })
 
-      const completion = await createAdaptaCompletionStream(prompt, adaptaOptions, async chunk => {
-        streamedContent += chunk
+      const completion = await createAdaptaCompletionStream(prompt, adaptaOptions, async delta => {
+        if (delta.type === 'reasoning') {
+          streamedReasoningContent += delta.content
+        } else {
+          streamedContent += delta.content
+        }
         await writeEvent({
           id: completionId,
           object: 'chat.completion.chunk',
@@ -151,7 +164,9 @@ export async function chatCompletions(c: Context) {
           metadata: streamChatId ? { adapta_chat_id: streamChatId } : undefined,
           choices: [{
             index: 0,
-            delta: { content: chunk },
+            delta: delta.type === 'reasoning'
+              ? { reasoning_content: delta.content }
+              : { content: delta.content },
             logprobs: null,
             finish_reason: null,
           }],
@@ -186,7 +201,7 @@ export async function chatCompletions(c: Context) {
           ...(completion.refinementQuestions.length
             ? { adapta_refinement_questions: completion.refinementQuestions }
             : {}),
-        })
+        }, streamedReasoningContent || completion.reasoningContent)
         await writeEvent({
           id: completionId,
           object: 'chat.completion.chunk',

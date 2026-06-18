@@ -273,6 +273,7 @@ test('/adaptaproxy/api/v1/chat/completions streams only when explicitly requeste
       })
     }
     return new Response([
+      'data: {"type":"reasoning-delta","delta":"Thinking"}\n\n',
       'data: {"type":"text-delta","delta":"O"}\n\n',
       'data: {"type":"text-delta","delta":"K"}\n\n',
       'data: [DONE]\n\n',
@@ -295,6 +296,7 @@ test('/adaptaproxy/api/v1/chat/completions streams only when explicitly requeste
     assert.match(jsonResponse.headers.get('Content-Type') || '', /application\/json/)
     const jsonBody = await jsonResponse.json() as any
     assert.equal(jsonBody.choices[0].message.content, 'OK')
+    assert.equal(jsonBody.choices[0].message.reasoning_content, 'Thinking')
 
     const streamResponse = await app.request('/adaptaproxy/api/v1/chat/completions', {
       method: 'POST',
@@ -310,6 +312,7 @@ test('/adaptaproxy/api/v1/chat/completions streams only when explicitly requeste
     assert.match(streamResponse.headers.get('Content-Type') || '', /text\/event-stream/)
     const streamBody = await streamResponse.text()
     assert.match(streamBody, /"object":"chat\.completion\.chunk"/)
+    assert.match(streamBody, /"reasoning_content":"Thinking"/)
     assert.match(streamBody, /"content":"O"/)
     assert.match(streamBody, /"content":"K"/)
     assert.match(streamBody, /data: \[DONE\]/)

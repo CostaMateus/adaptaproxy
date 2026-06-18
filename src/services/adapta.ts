@@ -30,6 +30,7 @@ export interface AdaptaRequestOptions {
 
 export interface AdaptaCompletion {
   content: string
+  reasoningContent?: string
   raw: unknown
   chatId: string
   messageId: string
@@ -40,8 +41,14 @@ export interface AdaptaStreamCompletion {
   chatId: string
   messageId: string
   content: string
+  reasoningContent?: string
   raw: string
   refinementQuestions: AdaptaRefinementQuestion[]
+}
+
+export interface AdaptaStreamDelta {
+  type: 'text' | 'reasoning'
+  content: string
 }
 
 export class AdaptaUpstreamError extends Error {
@@ -498,6 +505,49 @@ async function buildAdaptaRequest(prompt: string, options: AdaptaRequestOptions 
   }
 }
 
+export function extractReasoningFromAdaptaPayload(payload: unknown): string {
+  if (typeof payload === 'string') return extractReasoningFromSse(payload)
+  if (!payload || typeof payload !== 'object') return ''
+
+  const record = payload as Record<string, unknown>
+  for (const key of ['reasoning_content', 'reasoningContent', 'reasoning', 'thoughts']) {
+    const value = record[key]
+    if (typeof value === 'string' && value.trim()) return value
+  }
+
+  const nestedKeys = ['data', 'payload', 'assistant', 'completion']
+  for (const key of nestedKeys) {
+    const nested = extractReasoningFromAdaptaPayload(record[key])
+    if (nested) return nested
+  }
+
+  if (Array.isArray(record.messages)) {
+    for (let index = record.messages.length - 1; index >= 0; index--) {
+      const text = extractReasoningFromAdaptaPayload(record.messages[index])
+      if (text) return text
+    }
+  }
+
+  if (Array.isArray(record.choices)) {
+    const first = record.choices[0] as Record<string, unknown> | undefined
+    const text = extractReasoningFromAdaptaPayload(first?.message ?? first?.delta ?? first)
+    if (text) return text
+  }
+
+  return ''
+}
+
+export function extractReasoningFromSse(raw: string): string {
+  let reasoning = ''
+
+  for (const line of raw.split(/\r?\n/)) {
+    const delta = extractDeltaFromSseLine(line)
+    if (delta.type === 'reasoning') reasoning += delta.content
+  }
+
+  return reasoning
+}
+
 async function resolveAdaptaRemoteChatId(
   options: AdaptaRequestOptions,
 ): Promise<string> {
@@ -565,6 +615,7 @@ export async function createAdaptaCompletion(prompt: string, options: AdaptaRequ
 
     const raw = contentType.includes('application/json') ? JSON.parse(rawText) : rawText
     const content = extractTextFromAdaptaPayload(raw)
+    const reasoningContent = extractReasoningFromAdaptaPayload(raw) || undefined
     const refinementQuestions = extractRefinementQuestionsFromAdaptaPayload(raw)
     if (!content) {
       throw new AdaptaUpstreamError(
@@ -573,7 +624,7 @@ export async function createAdaptaCompletion(prompt: string, options: AdaptaRequ
       )
     }
 
-    return { content, raw, chatId: request.chatId, messageId: request.messageId, refinementQuestions }
+    return { content, reasoningContent, raw, chatId: request.chatId, messageId: request.messageId, refinementQuestions }
   } finally {
     clearTimeout(timeout)
   }
@@ -582,13 +633,14 @@ export async function createAdaptaCompletion(prompt: string, options: AdaptaRequ
 export async function createAdaptaCompletionStream(
   prompt: string,
   options: AdaptaRequestOptions,
-  onText: (chunk: string) => Promise<void> | void,
+  onDelta: (delta: AdaptaStreamDelta) => Promise<void> | void,
 ): Promise<AdaptaStreamCompletion> {
   let request = await buildAdaptaRequest(prompt, options)
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), config.timeouts.chat)
   let raw = ''
   let content = ''
+  let reasoningContent = ''
 
   try {
     let response = await fetch(request.url, {
@@ -622,9 +674,12 @@ export async function createAdaptaCompletionStream(
     if (!response.body) {
       const rawText = await response.text()
       const text = extractTextFromAdaptaPayload(rawText)
-      if (text) await onText(text)
+      const reasoning = extractReasoningFromAdaptaPayload(rawText)
+      if (reasoning) await onDelta({ type: 'reasoning', content: reasoning })
+      if (text) await onDelta({ type: 'text', content: text })
       return {
         content: text,
+        reasoningContent: reasoning || undefined,
         raw: rawText,
         chatId: request.chatId,
         messageId: request.messageId,
@@ -648,10 +703,14 @@ export async function createAdaptaCompletionStream(
       buffer = lines.pop() || ''
 
       for (const line of lines) {
-        const text = extractTextDeltaFromSseLine(line)
-        if (!text) continue
-        content += text
-        await onText(text)
+        const delta = extractDeltaFromSseLine(line)
+        if (!delta.content) continue
+        if (delta.type === 'reasoning') {
+          reasoningContent += delta.content
+        } else {
+          content += delta.content
+        }
+        await onDelta(delta)
       }
     }
 
@@ -662,16 +721,22 @@ export async function createAdaptaCompletionStream(
     }
 
     if (buffer) {
-      const text = extractTextDeltaFromSseLine(buffer)
-      if (text) {
-        content += text
-        await onText(text)
+      const delta = extractDeltaFromSseLine(buffer)
+      if (delta.content) {
+        if (delta.type === 'reasoning') {
+          reasoningContent += delta.content
+        } else {
+          content += delta.content
+        }
+        await onDelta(delta)
       }
     }
 
     if (!content) {
       content = extractTextFromAdaptaPayload(raw)
-      if (content) await onText(content)
+      reasoningContent = reasoningContent || extractReasoningFromAdaptaPayload(raw)
+      if (reasoningContent) await onDelta({ type: 'reasoning', content: reasoningContent })
+      if (content) await onDelta({ type: 'text', content })
     }
 
     if (!content) {
@@ -683,6 +748,7 @@ export async function createAdaptaCompletionStream(
 
     return {
       content,
+      reasoningContent: reasoningContent || undefined,
       raw,
       chatId: request.chatId,
       messageId: request.messageId,
@@ -693,22 +759,29 @@ export async function createAdaptaCompletionStream(
   }
 }
 
-function extractTextDeltaFromSseLine(line: string): string {
+function extractDeltaFromSseLine(line: string): AdaptaStreamDelta {
   const trimmed = line.trim()
-  if (!trimmed.startsWith('data:')) return ''
+  if (!trimmed.startsWith('data:')) return { type: 'text', content: '' }
 
   const data = trimmed.slice(5).trim()
-  if (!data || data === '[DONE]') return ''
+  if (!data || data === '[DONE]') return { type: 'text', content: '' }
 
   try {
     const event = JSON.parse(data)
-    if (event?.type === 'text-delta' && typeof event.delta === 'string') return event.delta
-    if (event?.type === 'text' && typeof event.text === 'string') return event.text
+    if (event?.type === 'reasoning-delta' && typeof event.delta === 'string') {
+      return { type: 'reasoning', content: event.delta }
+    }
+    if (event?.type === 'text-delta' && typeof event.delta === 'string') {
+      return { type: 'text', content: event.delta }
+    }
+    if (event?.type === 'text' && typeof event.text === 'string') {
+      return { type: 'text', content: event.text }
+    }
   } catch {
-    return ''
+    return { type: 'text', content: '' }
   }
 
-  return ''
+  return { type: 'text', content: '' }
 }
 
 async function resolveProjectFolderId(options: AdaptaRequestOptions = {}): Promise<string | null> {
