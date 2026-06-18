@@ -13,6 +13,15 @@ interface CompletionMetadata {
   adapta_refinement_questions?: unknown[]
 }
 
+type AdaptaChatMode = 'reuse' | 'new' | 'specific'
+
+function requestedAdaptaChatMode(value: unknown, headerValue: string | undefined): AdaptaChatMode | undefined {
+  const mode = typeof value === 'string' ? value : headerValue
+  if (!mode) return undefined
+  if (mode === 'reuse' || mode === 'new' || mode === 'specific') return mode
+  throw Object.assign(new Error('`metadata.adapta_chat_mode` must be one of: reuse, new, specific'), { status: 400 })
+}
+
 function estimateTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4))
 }
@@ -60,10 +69,22 @@ export async function chatCompletions(c: Context) {
     const requestedChatId = typeof body.metadata?.adapta_chat_id === 'string'
       ? body.metadata.adapta_chat_id
       : undefined
+    const requestedChatMode = requestedAdaptaChatMode(
+      body.metadata?.adapta_chat_mode,
+      c.req.header('x-adapta-chat-mode') || undefined,
+    )
+    if (requestedChatMode === 'specific' && !requestedChatId) {
+      return c.json({
+        error: {
+          message: '`metadata.adapta_chat_id` is required when `metadata.adapta_chat_mode` is "specific"',
+        },
+      }, 400)
+    }
     const requestedSessionKey = typeof body.metadata?.adapta_session_key === 'string'
       ? body.metadata.adapta_session_key
       : c.req.header('x-adapta-session-key') || config.chats.defaultChatId
-    const requestedNewChat = body.metadata?.adapta_new_chat === true ||
+    const requestedNewChat = requestedChatMode === 'new' ||
+      body.metadata?.adapta_new_chat === true ||
       c.req.header('x-adapta-new-chat') === 'true'
     const adaptaOptions = {
       account,
@@ -78,8 +99,9 @@ export async function chatCompletions(c: Context) {
         : undefined,
     }
     const completionId = 'chatcmpl-' + uuidv4()
+    const shouldStream = body.stream === true
 
-    if (!body.stream) {
+    if (!shouldStream) {
       const completion = await createAdaptaCompletion(prompt, adaptaOptions)
       return c.json(completionPayload(completionId, model, completion.content, prompt, {
         adapta_chat_id: completion.chatId,

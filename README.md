@@ -167,20 +167,50 @@ model: 'GPT_55'
 ## Exemplo com cURL
 
 ```bash
-curl http://localhost:3000/adaptaproxy/api/v1/chat/completions \
+curl -N http://localhost:3000/adaptaproxy/api/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your_proxy_api_key" \
   -d '{
     "model": "GPT_55",
+    "stream": true,
     "messages": [
       { "role": "user", "content": "Ola" }
     ]
-  }'
+}'
+```
+
+Para receber streaming SSE (`text/event-stream`), envie `"stream": true`. Sem esse campo, ou com `"stream": false`, `/chat/completions` retorna JSON completo ao final, seguindo o padrão de clientes OpenAI-compatible.
+
+```json
+{
+  "model": "GPT_55",
+  "stream": true,
+  "messages": [
+    { "role": "user", "content": "Ola" }
+  ]
+}
 ```
 
 ## Controle de chats
 
-Por padrão, chamadas sem `metadata.adapta_chat_id` usam a session key `default`. Na primeira chamada dessa session key, o Adaptaproxy cria um chat remoto real na Adapta e salva o mapeamento em `CHAT_SESSIONS_FILE`. Nas próximas chamadas com a mesma session key, ele reutiliza o `remoteChatId` salvo em vez de inventar um UUID local.
+O endpoint `/chat/completions` continua compatível com clientes OpenAI, mas o Adaptaproxy aceita metadados próprios para controlar quando reutilizar ou criar chats na Adapta.
+
+| Campo | Uso |
+| --- | --- |
+| `metadata.adapta_chat_mode` | Modo de conversa: `reuse`, `new` ou `specific` |
+| `metadata.adapta_session_key` | Nome lógico da conversa. Chamadas com a mesma key reutilizam o chat remoto salvo |
+| `metadata.adapta_chat_id` | ID de um chat remoto específico da Adapta |
+| `metadata.adapta_new_chat` | Boolean legado; equivalente a `metadata.adapta_chat_mode: "new"` |
+
+Modos:
+
+| Modo | Comportamento |
+| --- | --- |
+| `reuse` | Reutiliza o chat remoto associado à `adapta_session_key`. É o padrão |
+| `new` | Cria um novo chat remoto e passa a associá-lo à `adapta_session_key` |
+| `specific` | Usa exatamente o chat de `adapta_chat_id`; exige `metadata.adapta_chat_id` |
+
+Sem `metadata.adapta_chat_id` e sem `metadata.adapta_session_key`, a chamada usa a session key padrão (`ADAPTA_DEFAULT_CHAT_ID`). Na primeira chamada dessa session key, o Adaptaproxy cria um chat remoto real na Adapta e salva o mapeamento em `CHAT_SESSIONS_FILE`. Nas próximas chamadas, ele reutiliza o `remoteChatId` salvo.
 
 ```json
 {
@@ -225,7 +255,7 @@ Para criar um novo chat remoto explicitamente para a session key e passar a reut
   "model": "GPT_55",
   "metadata": {
     "adapta_session_key": "hermes",
-    "adapta_new_chat": true
+    "adapta_chat_mode": "new"
   },
   "messages": [
     { "role": "user", "content": "Comece uma nova conversa." }
@@ -233,7 +263,7 @@ Para criar um novo chat remoto explicitamente para a session key e passar a reut
 }
 ```
 
-Também é possível usar o header `x-adapta-new-chat: true`.
+Também é possível usar o header `x-adapta-chat-mode: new`. O campo legado `metadata.adapta_new_chat: true` e o header `x-adapta-new-chat: true` continuam funcionando.
 
 Para usar um chat remoto específico, envie o ID em `metadata`:
 
@@ -241,6 +271,7 @@ Para usar um chat remoto específico, envie o ID em `metadata`:
 {
   "model": "GPT_55",
   "metadata": {
+    "adapta_chat_mode": "specific",
     "adapta_chat_id": "..."
   },
   "messages": [
@@ -248,6 +279,8 @@ Para usar um chat remoto específico, envie o ID em `metadata`:
   ]
 }
 ```
+
+Quando `adapta_chat_id` é enviado, ele tem prioridade sobre a session key.
 
 Para direcionar uma chamada para outro projeto/pasta sem reiniciar o servidor, use:
 
