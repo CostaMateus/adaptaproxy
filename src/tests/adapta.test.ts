@@ -243,6 +243,81 @@ test('/adaptaproxy/api/v1/models lists Adapta models with GPT_55 as default', as
   }
 })
 
+test('/adaptaproxy/api/v1/chat/completions validates adapta_chat_mode', async () => {
+  const authHeaders = createTestAuthHeaders()
+  const response = await app.request('/adaptaproxy/api/v1/chat/completions', {
+    method: 'POST',
+    body: JSON.stringify({
+      model: 'GPT_55',
+      metadata: {
+        adapta_chat_mode: 'specific',
+      },
+      messages: [{ role: 'user', content: 'Ola' }],
+    }),
+    headers: { ...authHeaders, 'Content-Type': 'application/json' },
+  })
+
+  assert.equal(response.status, 400)
+  const body = await response.json() as any
+  assert.match(body.error.message, /adapta_chat_id/)
+})
+
+test('/adaptaproxy/api/v1/chat/completions streams only when explicitly requested', async () => {
+  const authHeaders = createTestAuthHeaders()
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input)
+    if (url.includes('/api/folders')) {
+      return new Response(JSON.stringify({ data: [{ id: 'folder-1', name: 'PROXY' }] }), {
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+    return new Response([
+      'data: {"type":"text-delta","delta":"O"}\n\n',
+      'data: {"type":"text-delta","delta":"K"}\n\n',
+      'data: [DONE]\n\n',
+    ].join(''), {
+      headers: { 'Content-Type': 'text/event-stream' },
+    })
+  }) as typeof fetch
+
+  try {
+    const jsonResponse = await app.request('/adaptaproxy/api/v1/chat/completions', {
+      method: 'POST',
+      body: JSON.stringify({
+        model: 'GPT_55',
+        messages: [{ role: 'user', content: 'Ola' }],
+      }),
+      headers: { ...authHeaders, 'Content-Type': 'application/json' },
+    })
+
+    assert.equal(jsonResponse.status, 200)
+    assert.match(jsonResponse.headers.get('Content-Type') || '', /application\/json/)
+    const jsonBody = await jsonResponse.json() as any
+    assert.equal(jsonBody.choices[0].message.content, 'OK')
+
+    const streamResponse = await app.request('/adaptaproxy/api/v1/chat/completions', {
+      method: 'POST',
+      body: JSON.stringify({
+        model: 'GPT_55',
+        stream: true,
+        messages: [{ role: 'user', content: 'Ola' }],
+      }),
+      headers: { ...authHeaders, 'Content-Type': 'application/json' },
+    })
+
+    assert.equal(streamResponse.status, 200)
+    assert.match(streamResponse.headers.get('Content-Type') || '', /text\/event-stream/)
+    const streamBody = await streamResponse.text()
+    assert.match(streamBody, /"object":"chat\.completion\.chunk"/)
+    assert.match(streamBody, /"content":"O"/)
+    assert.match(streamBody, /"content":"K"/)
+    assert.match(streamBody, /data: \[DONE\]/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('/adaptaproxy/api/v1/adapta/chats creates, lists, reads, and deletes chat sessions', async () => {
   const authHeaders = createTestAuthHeaders()
   const createResponse = await app.request('/adaptaproxy/api/v1/adapta/chats', {
