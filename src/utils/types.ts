@@ -59,6 +59,7 @@ export interface OpenAIRequest {
   metadata?: {
     adapta_chat_id?: string;
     adapta_session_key?: string;
+    adapta_chat_mode?: 'reuse' | 'new' | 'specific';
     adapta_new_chat?: boolean;
     adapta_user_key?: string;
     adapta_project_name?: string;
