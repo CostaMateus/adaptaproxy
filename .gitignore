@@ -1,9 +1,6 @@
 # Dependencies
 node_modules/
 
-# Build
-dist/
-
 # Environment
 .env
 .env.local
@@ -23,21 +20,7 @@ chat-sessions.json
 *.chat-sessions.json
 
 # Logs
+logs/
 *.log
-
-# Coverage & cache
-coverage/
-.cache/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# IDE / Editor
-.kilo
 .vscode
-
-# Legacy
-/core/
-
 /tmp-*/
