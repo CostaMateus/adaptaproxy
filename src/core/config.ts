@@ -7,6 +7,10 @@ const envSchema = z.object({
   USER_DATA_DIR: z.string().default('./adapta_profiles'),
   USER_AGENT: z.string().default('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'),
   LOG_CONSOLE: z.string().default('false'),
+  APP_LOG_DIR: z.string().default('./logs'),
+  APP_LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+  APP_LOG_FILE: z.string().default('true'),
+  APP_LOG_CONSOLE: z.string().default('true'),
   NAVIGATION_TIMEOUT: z.string().default('30000'),
   PAGE_TIMEOUT: z.string().default('15000'),
   HTTP_TIMEOUT: z.string().default('10000'),
@@ -61,6 +65,12 @@ export const config = {
       'accept-language': 'en-US,en;q=0.9',
     },
     logConsole: env.LOG_CONSOLE === 'true',
+  },
+  logging: {
+    dir: env.APP_LOG_DIR,
+    level: env.APP_LOG_LEVEL,
+    fileEnabled: env.APP_LOG_FILE !== 'false',
+    consoleEnabled: env.APP_LOG_CONSOLE !== 'false',
   },
   timeouts: {
     navigation: parseInt(env.NAVIGATION_TIMEOUT),

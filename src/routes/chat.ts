@@ -2,10 +2,13 @@ import { Context } from 'hono'
 import { stream as honoStream } from 'hono/streaming'
 import { v4 as uuidv4 } from 'uuid'
 import { config } from '../core/config.ts'
+import { logger } from '../core/logger.ts'
 import { metrics } from '../core/metrics.js'
 import { createAdaptaCompletion, createAdaptaCompletionStream, openAiMessagesToPrompt } from '../services/adapta.ts'
 import { OpenAIRequest } from '../utils/types.ts'
 import { redactSecrets } from '../utils/redact.ts'
+
+const chatLogger = logger.child('chat')
 
 interface CompletionMetadata {
   adapta_chat_id: string
@@ -63,10 +66,19 @@ function completionPayload(
 }
 
 export async function chatCompletions(c: Context) {
+  const requestId = (c as any).get('requestId') as string | undefined
+  const startedAt = Date.now()
   try {
     const body: OpenAIRequest = await c.req.json()
     const model = body.model || config.adapta.modelId
     const messages = body.messages || []
+    chatLogger.info('completion.started', {
+      requestId,
+      model,
+      stream: body.stream === true,
+      messageCount: Array.isArray(messages) ? messages.length : 0,
+      toolCount: Array.isArray(body.tools) ? body.tools.length : 0,
+    })
 
     if (!Array.isArray(messages) || messages.length === 0) {
       return c.json({ error: { message: '`messages` must be a non-empty array' } }, 400)
@@ -96,6 +108,7 @@ export async function chatCompletions(c: Context) {
       c.req.header('x-adapta-new-chat') === 'true'
     const adaptaOptions = {
       account,
+      requestId,
       chatId: requestedChatId,
       sessionKey: requestedSessionKey,
       newChat: requestedNewChat,
@@ -111,6 +124,15 @@ export async function chatCompletions(c: Context) {
 
     if (!shouldStream) {
       const completion = await createAdaptaCompletion(prompt, adaptaOptions)
+      chatLogger.info('completion.completed', {
+        requestId,
+        model,
+        stream: false,
+        durationMs: Date.now() - startedAt,
+        chatId: completion.chatId,
+        contentLength: completion.content.length,
+        reasoningLength: completion.reasoningContent?.length || 0,
+      })
       return c.json(completionPayload(completionId, model, completion.content, prompt, {
         adapta_chat_id: completion.chatId,
         adapta_session_key: requestedChatId ? undefined : requestedSessionKey,
@@ -172,6 +194,15 @@ export async function chatCompletions(c: Context) {
           }],
         })
       })
+      chatLogger.info('completion.completed', {
+        requestId,
+        model,
+        stream: true,
+        durationMs: Date.now() - startedAt,
+        chatId: completion.chatId,
+        contentLength: completion.content.length,
+        reasoningLength: completion.reasoningContent?.length || 0,
+      })
       streamChatId = completion.chatId
 
       await writeEvent({
@@ -219,7 +250,12 @@ export async function chatCompletions(c: Context) {
       await writer.write('data: [DONE]\n\n')
     })
   } catch (err: any) {
-    console.error('Error in chatCompletions:', redactSecrets(err))
+    chatLogger.error('completion.failed', {
+      requestId,
+      status: err.status || err.upstreamStatus || 500,
+      durationMs: Date.now() - startedAt,
+      error: err,
+    })
     const status = err.status || err.upstreamStatus || 500
     if (status >= 500) metrics.increment('requests.errors')
     return c.json({

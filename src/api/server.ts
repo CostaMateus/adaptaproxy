@@ -1,6 +1,8 @@
 import { Hono } from 'hono'
 import { serve } from '@hono/node-server'
+import { randomUUID } from 'node:crypto'
 import { config } from '../core/config.js'
+import { logger } from '../core/logger.ts'
 import { metrics } from '../core/metrics.js'
 import { MemoryCache } from '../cache/memory-cache.js'
 import { Watchdog } from '../core/watchdog.js'
@@ -14,34 +16,77 @@ import { getUserByApiKey } from '../services/auth-store.ts'
 import { accountContextFromAuthenticatedUser } from '../services/adapta-account-resolver.ts'
 
 const app = new Hono()
+const httpLogger = logger.child('http')
+const authLogger = logger.child('auth')
+const serverLogger = logger.child('server')
 
 let cache: MemoryCache
 let watchdog: Watchdog
 let server: any
 
 app.use('*', async (c, next) => {
+  const incomingRequestId = c.req.header('x-request-id')?.trim() || ''
+  const requestId = /^[A-Za-z0-9._:-]{1,100}$/.test(incomingRequestId)
+    ? incomingRequestId
+    : randomUUID()
+  ;(c as any).set('requestId', requestId)
+  c.header('X-Request-ID', requestId)
+
   metrics.increment('requests.total')
   const start = Date.now()
-  await next()
-  const duration = Date.now() - start
-  metrics.histogram('latency.request', duration)
-  c.header('X-Response-Time', `${duration}ms`)
+  try {
+    await next()
+  } finally {
+    const durationMs = Date.now() - start
+    const status = c.res?.status || 500
+    const user = (c as any).get('adaptaproxyUser')
+    metrics.histogram('latency.request', durationMs)
+    c.header('X-Response-Time', `${durationMs}ms`)
+    const eventData = {
+      requestId,
+      method: c.req.method,
+      path: new URL(c.req.url).pathname,
+      status,
+      durationMs,
+      ...(user?.id ? { userId: user.id } : {}),
+    }
+    if (status >= 500) {
+      httpLogger.error('request.completed', eventData)
+    } else if (status >= 400) {
+      httpLogger.warn('request.completed', eventData)
+    } else {
+      httpLogger.info('request.completed', eventData)
+    }
+  }
 })
 
 app.use('/adaptaproxy/api/v1/*', async (c, next) => {
   const auth = c.req.header('Authorization')
   if (!auth?.startsWith('Bearer ')) {
+    authLogger.warn('request.rejected', {
+      requestId: (c as any).get('requestId'),
+      reason: 'missing_or_invalid_authorization',
+    })
     return c.json({ error: { message: 'Missing or invalid Authorization header' } }, 401)
   }
   const token = auth.slice(7)
   const authUser = getUserByApiKey(token)
   if (!authUser) {
+    authLogger.warn('request.rejected', {
+      requestId: (c as any).get('requestId'),
+      reason: 'invalid_api_key',
+    })
     return c.json({ error: { message: 'Invalid API key' } }, 401)
   }
   try {
     ;(c as any).set('adaptaproxyUser', authUser.user)
     ;(c as any).set('adaptaAccount', accountContextFromAuthenticatedUser(authUser))
   } catch (error: any) {
+    authLogger.warn('request.rejected', {
+      requestId: (c as any).get('requestId'),
+      reason: error.type || 'adapta_account_login_required',
+      userId: authUser.user.id,
+    })
     return c.json({
       error: {
         message: error.message,
@@ -112,7 +157,10 @@ app.get('/adaptaproxy/metrics', (c) => {
 
 app.onError((err, c) => {
   metrics.increment('requests.errors')
-  console.error('API Error:', redactSecrets(err))
+  logger.child('api').error('request.unhandled_error', {
+    requestId: (c as any).get('requestId'),
+    error: err,
+  })
   return c.json({ error: redactSecrets(err.message) }, 500)
 })
 
@@ -146,12 +194,15 @@ export async function startServer(): Promise<void> {
     hostname: config.server.host,
   }, (info) => {
     const browserHost = info.address === '0.0.0.0' ? 'localhost' : info.address
-    console.log(`Server listening on http://${info.address}:${info.port}`)
-    console.log(`Open http://${browserHost}:${info.port}`)
+    serverLogger.info('started', {
+      address: info.address,
+      port: info.port,
+      localUrl: `http://${browserHost}:${info.port}`,
+    })
   })
 
   const shutdown = async (signal: string) => {
-    console.log(`Received ${signal}, shutting down gracefully...`)
+    serverLogger.info('shutdown.started', { signal })
     watchdog.stop()
     metrics.stopCollection()
     await cache.close()
@@ -160,6 +211,7 @@ export async function startServer(): Promise<void> {
     const { closeDatabase } = await import('../core/database.ts')
     closeDatabase()
     server?.close()
+    serverLogger.info('shutdown.completed', { signal })
     process.exit(0)
   }
 

@@ -37,6 +37,7 @@ app.get('/v1/adapta/chats', async c => {
     const page = Number(c.req.query('page') || 1)
     const data = await listAdaptaRemoteChats({
       account,
+      requestId: (c as any).get('requestId'),
       limit: Number.isFinite(limit) ? limit : 20,
       page: Number.isFinite(page) ? page : 1,
       folderId: c.req.query('folderId') || undefined,
@@ -81,7 +82,10 @@ app.delete('/v1/adapta/chats/:id', async c => {
   const account = accountForRequest(c)
   setAdaptaChatSessionsFile(account.chatSessionsFile)
   if (c.req.query('source') === 'remote') {
-    const deleted = await deleteAdaptaRemoteChat(c.req.param('id'), { account })
+    const deleted = await deleteAdaptaRemoteChat(c.req.param('id'), {
+      account,
+      requestId: (c as any).get('requestId'),
+    })
     return c.json({
       id: c.req.param('id'),
       object: 'adapta.remote_chat.deleted',

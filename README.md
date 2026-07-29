@@ -356,6 +356,10 @@ A exclusão remota depende do endpoint interno atual da Adapta. Se a UI mudar, o
 | --- | --- | --- |
 | `PORT` | `3000` | Porta HTTP |
 | `HOST` | `0.0.0.0` | Host HTTP |
+| `APP_LOG_DIR` | `./logs` | Diretório dos logs estruturados diários |
+| `APP_LOG_LEVEL` | `info` | Nível mínimo: `debug`, `info`, `warn` ou `error` |
+| `APP_LOG_FILE` | `true` | Grava `adaptaproxy-AAAA-MM-DD.log` em formato JSON Lines |
+| `APP_LOG_CONSOLE` | `true` | Também envia os eventos estruturados para stdout/stderr |
 | `API_KEY` | vazio | Segredo legado opcional; as rotas `/adaptaproxy/api/v1/*` usam API key por usuário |
 | `HEADLESS` | `true` | Inicia Playwright sem janela ao rodar o servidor |
 | `USER_DATA_DIR` | `./adapta_profiles` | Perfil persistente do navegador |
@@ -378,13 +382,33 @@ ADAPTA_PROJECT_NAME=nome_da_pasta
 
 Se o projeto configurado não existir na Adapta, o proxy retorna erro claro em vez de criar o chat fora da pasta.
 
+## Logs e diagnóstico
+
+O aplicativo grava um arquivo JSON Lines por dia em `logs/adaptaproxy-AAAA-MM-DD.log`. Cada requisição recebe um `requestId`, devolvido também no header `X-Request-ID`, para correlacionar a entrada HTTP com as fases do navegador e da comunicação com a ADAPTA.
+
+Os eventos incluem rota sem query string, status HTTP, duração e fases como `browser.account_activation`, `session.headers_capture`, `upstream.request`, `upstream.response`, `session.refresh` e `completion.parsed`. Não são registrados prompts, corpos de requisição/resposta, e-mails, API keys, cookies ou senhas. Campos sensíveis encontrados em erros são substituídos por `[REDACTED]`.
+
+No Windows Server, acompanhe o arquivo atual em tempo real:
+
+```powershell
+Get-Content "C:\www\adaptaproxy\logs\adaptaproxy-$(Get-Date -Format yyyy-MM-dd).log" -Tail 100 -Wait
+```
+
+Para localizar toda a cadeia de uma requisição:
+
+```powershell
+Select-String -Path "C:\www\adaptaproxy\logs\adaptaproxy-*.log" -Pattern '"requestId":"ID_RECEBIDO_NO_HEADER"'
+```
+
+Falhas de TLS que aconteçam antes de a chamada chegar ao Node.js aparecem apenas no log do Apache; nesse caso não haverá `requestId` no log do aplicativo.
+
 ## Segurança
 
 - Não versione `.env`.
 - Não versione `data/`; ele contém o SQLite local.
 - Não versione `adapta_profiles/`; ele contém sessão do navegador.
 - Não versione `CHAT_SESSIONS_FILE` se ele estiver fora de `adapta_profiles/`.
-- Logs e erros passam por redaction básica de `Authorization`, cookies, JWTs e API keys.
+- Logs e erros passam por redaction de `Authorization`, cookies, JWTs, API keys, tokens, segredos e senhas.
 - Use uma API key individual gerada em `/adaptaproxy/account` para cada cliente/usuário.
 
 ## Docker

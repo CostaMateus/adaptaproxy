@@ -1,4 +1,5 @@
 import { config } from '../core/config.ts'
+import { logger } from '../core/logger.ts'
 import {
   getAdaptaChatSessionByKey,
   newAdaptaMessageId,
@@ -21,6 +22,7 @@ import { AdaptaAccountContext } from './adapta-account-resolver.ts'
 
 export interface AdaptaRequestOptions {
   account?: AdaptaAccountContext
+  requestId?: string
   chatId?: string
   sessionKey?: string
   newChat?: boolean
@@ -461,30 +463,37 @@ function dedupeQuestions(questions: AdaptaRefinementQuestion[]): AdaptaRefinemen
   })
 }
 
-async function buildAdaptaRequest(prompt: string, options: AdaptaRequestOptions = {}): Promise<{
-  url: string
-  method: string
-  headers: Record<string, string>
-  body: unknown
-  chatId: string
-  messageId: string
-}> {
+async function buildAdaptaRequest(prompt: string, options: AdaptaRequestOptions = {}): Promise<PreparedAdaptaRequest> {
+  const startedAt = Date.now()
+  adaptaLogger.info('request.preparation.started', adaptaLogData(options, {
+    accountMode: options.account?.mode || 'default',
+    requestedChatMode: options.chatId ? 'specific' : options.newChat ? 'new' : 'reuse',
+    hasProjectName: Boolean(options.projectName),
+    hasFolderId: Boolean(options.folderId),
+  }))
   if (options.account) {
     setAdaptaChatSessionsFile(options.account.chatSessionsFile)
+    const browserStartedAt = Date.now()
+    adaptaLogger.info('browser.account_activation.started', adaptaLogData(options))
     await usePlaywrightAccount({
       accountKey: options.account.userId || options.account.userKey,
       profileDir: options.account.profileDir,
       email: options.account.email,
       password: options.account.password,
     })
+    adaptaLogger.info('browser.account_activation.completed', adaptaLogData(options, {
+      durationMs: Date.now() - browserStartedAt,
+    }))
     await ensureAdaptaProjectFolder(options.account.projectName, options.account.userId || options.account.userKey).catch(error => {
-      console.warn(`[Adapta] Could not ensure project "${options.account?.projectName}": ${error.message}`)
+      adaptaLogger.warn('project.ensure_failed', adaptaLogData(options, { error }))
     })
   }
 
   const accountKey = options.account?.userId || options.account?.userKey
   const captured = getCachedAdaptaChatRequestForAccount(accountKey) ?? getDefaultAdaptaChatRequest()
+  adaptaLogger.info('session.headers_capture.started', adaptaLogData(options))
   const sessionHeaders = await getAdaptaSessionHeaders(accountKey)
+  adaptaLogger.info('session.headers_capture.completed', adaptaLogData(options))
   const projectFolderId = await resolveProjectFolderId(options)
   const remoteChatId = await resolveAdaptaRemoteChatId(options)
   const prepared = prepareAdaptaPayload(captured.postData, prompt, remoteChatId)
@@ -492,7 +501,7 @@ async function buildAdaptaRequest(prompt: string, options: AdaptaRequestOptions 
     ? applyProjectFolderToPayload(prepared.body, projectFolderId)
     : prepared.body
 
-  return {
+  const request = {
     url: captured.url,
     method: captured.method,
     headers: {
@@ -502,6 +511,89 @@ async function buildAdaptaRequest(prompt: string, options: AdaptaRequestOptions 
     body: requestBody,
     chatId: prepared.chatId,
     messageId: prepared.messageId,
+  }
+  adaptaLogger.info('request.preparation.completed', adaptaLogData(options, {
+    durationMs: Date.now() - startedAt,
+    projectResolved: Boolean(projectFolderId),
+    chatId: prepared.chatId,
+    upstream: safeUpstreamTarget(captured.url),
+  }))
+  return request
+}
+
+interface PreparedAdaptaRequest {
+  url: string
+  method: string
+  headers: Record<string, string>
+  body: unknown
+  chatId: string
+  messageId: string
+}
+
+const adaptaLogger = logger.child('adapta')
+
+function adaptaLogData(options: AdaptaRequestOptions, data: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    ...(options.requestId ? { requestId: options.requestId } : {}),
+    ...(options.account?.userId ? { userId: options.account.userId } : {}),
+    ...data,
+  }
+}
+
+function safeUpstreamTarget(rawUrl: string): { host: string, path: string } {
+  try {
+    const url = new URL(rawUrl)
+    return { host: url.host, path: url.pathname }
+  } catch {
+    return { host: 'invalid', path: 'invalid' }
+  }
+}
+
+async function fetchAdaptaUpstream(
+  request: PreparedAdaptaRequest,
+  signal: AbortSignal,
+  options: AdaptaRequestOptions,
+  stream: boolean,
+  attempt: number,
+): Promise<Response> {
+  const startedAt = Date.now()
+  const target = safeUpstreamTarget(request.url)
+  adaptaLogger.info('upstream.request.started', adaptaLogData(options, {
+    method: request.method,
+    host: target.host,
+    path: target.path,
+    stream,
+    attempt,
+  }))
+  try {
+    const response = await fetch(request.url, {
+      method: request.method,
+      headers: request.headers,
+      body: JSON.stringify(request.body),
+      signal,
+    })
+    adaptaLogger.info('upstream.response.received', adaptaLogData(options, {
+      method: request.method,
+      host: target.host,
+      path: target.path,
+      stream,
+      attempt,
+      status: response.status,
+      durationMs: Date.now() - startedAt,
+      contentType: response.headers.get('content-type') || '',
+    }))
+    return response
+  } catch (error) {
+    adaptaLogger.error('upstream.request.failed', adaptaLogData(options, {
+      method: request.method,
+      host: target.host,
+      path: target.path,
+      stream,
+      attempt,
+      durationMs: Date.now() - startedAt,
+      error,
+    }))
+    throw error
   }
 }
 
@@ -578,29 +670,27 @@ async function resolveAdaptaRemoteChatId(
 }
 
 export async function createAdaptaCompletion(prompt: string, options: AdaptaRequestOptions = {}): Promise<AdaptaCompletion> {
-  let request = await buildAdaptaRequest(prompt, options)
+  const startedAt = Date.now()
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), config.timeouts.chat)
 
   try {
-    let response = await fetch(request.url, {
-      method: request.method,
-      headers: request.headers,
-      body: JSON.stringify(request.body),
-      signal: controller.signal,
-    })
+    let request = await buildAdaptaRequest(prompt, options)
+    let response = await fetchAdaptaUpstream(request, controller.signal, options, false, 1)
 
     if (response.status === 401) {
-      console.warn('[Adapta] Upstream returned 401. Refreshing browser session and retrying completion once...')
+      adaptaLogger.warn('session.refresh.started', adaptaLogData(options, {
+        reason: 'upstream_401',
+        stream: false,
+      }))
       await response.body?.cancel().catch(() => {})
       await refreshAdaptaSession(options.account?.userId || options.account?.userKey)
+      adaptaLogger.info('session.refresh.completed', adaptaLogData(options, {
+        reason: 'upstream_401',
+        stream: false,
+      }))
       request = await buildAdaptaRequest(prompt, options)
-      response = await fetch(request.url, {
-        method: request.method,
-        headers: request.headers,
-        body: JSON.stringify(request.body),
-        signal: controller.signal,
-      })
+      response = await fetchAdaptaUpstream(request, controller.signal, options, false, 2)
     }
 
     const contentType = response.headers.get('content-type') || ''
@@ -608,7 +698,7 @@ export async function createAdaptaCompletion(prompt: string, options: AdaptaRequ
 
     if (!response.ok) {
       throw new AdaptaUpstreamError(
-        `Adapta upstream error: ${response.status} ${response.statusText} - ${rawText.slice(0, 500)}`,
+        `Adapta upstream error: ${response.status} ${response.statusText}`,
         response.status,
       )
     }
@@ -619,12 +709,28 @@ export async function createAdaptaCompletion(prompt: string, options: AdaptaRequ
     const refinementQuestions = extractRefinementQuestionsFromAdaptaPayload(raw)
     if (!content) {
       throw new AdaptaUpstreamError(
-        `Adapta response did not contain recognizable assistant text: ${rawText.slice(0, 500)}`,
+        'Adapta response did not contain recognizable assistant text',
         502,
       )
     }
 
+    adaptaLogger.info('completion.parsed', adaptaLogData(options, {
+      stream: false,
+      status: response.status,
+      durationMs: Date.now() - startedAt,
+      chatId: request.chatId,
+      contentLength: content.length,
+      reasoningLength: reasoningContent?.length || 0,
+      refinementQuestionCount: refinementQuestions.length,
+    }))
     return { content, reasoningContent, raw, chatId: request.chatId, messageId: request.messageId, refinementQuestions }
+  } catch (error) {
+    adaptaLogger.error('completion.failed', adaptaLogData(options, {
+      stream: false,
+      durationMs: Date.now() - startedAt,
+      error,
+    }))
+    throw error
   } finally {
     clearTimeout(timeout)
   }
@@ -635,7 +741,7 @@ export async function createAdaptaCompletionStream(
   options: AdaptaRequestOptions,
   onDelta: (delta: AdaptaStreamDelta) => Promise<void> | void,
 ): Promise<AdaptaStreamCompletion> {
-  let request = await buildAdaptaRequest(prompt, options)
+  const startedAt = Date.now()
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), config.timeouts.chat)
   let raw = ''
@@ -643,30 +749,28 @@ export async function createAdaptaCompletionStream(
   let reasoningContent = ''
 
   try {
-    let response = await fetch(request.url, {
-      method: request.method,
-      headers: request.headers,
-      body: JSON.stringify(request.body),
-      signal: controller.signal,
-    })
+    let request = await buildAdaptaRequest(prompt, options)
+    let response = await fetchAdaptaUpstream(request, controller.signal, options, true, 1)
 
     if (response.status === 401) {
-      console.warn('[Adapta] Upstream returned 401. Refreshing browser session and retrying stream once...')
+      adaptaLogger.warn('session.refresh.started', adaptaLogData(options, {
+        reason: 'upstream_401',
+        stream: true,
+      }))
       await response.body?.cancel().catch(() => {})
       await refreshAdaptaSession(options.account?.userId || options.account?.userKey)
+      adaptaLogger.info('session.refresh.completed', adaptaLogData(options, {
+        reason: 'upstream_401',
+        stream: true,
+      }))
       request = await buildAdaptaRequest(prompt, options)
-      response = await fetch(request.url, {
-        method: request.method,
-        headers: request.headers,
-        body: JSON.stringify(request.body),
-        signal: controller.signal,
-      })
+      response = await fetchAdaptaUpstream(request, controller.signal, options, true, 2)
     }
 
     if (!response.ok) {
-      const rawText = await response.text()
+      await response.body?.cancel().catch(() => {})
       throw new AdaptaUpstreamError(
-        `Adapta upstream error: ${response.status} ${response.statusText} - ${rawText.slice(0, 500)}`,
+        `Adapta upstream error: ${response.status} ${response.statusText}`,
         response.status,
       )
     }
@@ -677,13 +781,23 @@ export async function createAdaptaCompletionStream(
       const reasoning = extractReasoningFromAdaptaPayload(rawText)
       if (reasoning) await onDelta({ type: 'reasoning', content: reasoning })
       if (text) await onDelta({ type: 'text', content: text })
+      const refinementQuestions = extractRefinementQuestionsFromAdaptaPayload(rawText)
+      adaptaLogger.info('completion.parsed', adaptaLogData(options, {
+        stream: true,
+        status: response.status,
+        durationMs: Date.now() - startedAt,
+        chatId: request.chatId,
+        contentLength: text.length,
+        reasoningLength: reasoning.length,
+        refinementQuestionCount: refinementQuestions.length,
+      }))
       return {
         content: text,
         reasoningContent: reasoning || undefined,
         raw: rawText,
         chatId: request.chatId,
         messageId: request.messageId,
-        refinementQuestions: extractRefinementQuestionsFromAdaptaPayload(rawText),
+        refinementQuestions,
       }
     }
 
@@ -741,19 +855,36 @@ export async function createAdaptaCompletionStream(
 
     if (!content) {
       throw new AdaptaUpstreamError(
-        `Adapta response did not contain recognizable assistant text: ${raw.slice(0, 500)}`,
+        'Adapta response did not contain recognizable assistant text',
         502,
       )
     }
 
+    const refinementQuestions = extractRefinementQuestionsFromAdaptaPayload(raw)
+    adaptaLogger.info('completion.parsed', adaptaLogData(options, {
+      stream: true,
+      status: response.status,
+      durationMs: Date.now() - startedAt,
+      chatId: request.chatId,
+      contentLength: content.length,
+      reasoningLength: reasoningContent.length,
+      refinementQuestionCount: refinementQuestions.length,
+    }))
     return {
       content,
       reasoningContent: reasoningContent || undefined,
       raw,
       chatId: request.chatId,
       messageId: request.messageId,
-      refinementQuestions: extractRefinementQuestionsFromAdaptaPayload(raw),
+      refinementQuestions,
     }
+  } catch (error) {
+    adaptaLogger.error('completion.failed', adaptaLogData(options, {
+      stream: true,
+      durationMs: Date.now() - startedAt,
+      error,
+    }))
+    throw error
   } finally {
     clearTimeout(timeout)
   }
@@ -798,7 +929,7 @@ async function resolveProjectFolderId(options: AdaptaRequestOptions = {}): Promi
 
   const project = await getAdaptaProjectFolderByName(projectName, options.account?.userId || options.account?.userKey).catch(error => {
     if (options.projectName) throw error
-    console.warn(`[Adapta] Could not resolve default project "${projectName}": ${error.message}`)
+    adaptaLogger.warn('project.resolve_failed', adaptaLogData(options, { error }))
     return null
   })
   if (!project) {
@@ -820,11 +951,13 @@ export interface AdaptaRemoteChat {
 
 export async function listAdaptaRemoteChats(options: {
   account?: AdaptaAccountContext
+  requestId?: string
   folderId?: string
   projectName?: string
   limit?: number
   page?: number
 } = {}): Promise<AdaptaRemoteChat[]> {
+  const startedAt = Date.now()
   if (options.account) {
     setAdaptaChatSessionsFile(options.account.chatSessionsFile)
     await usePlaywrightAccount({
@@ -834,11 +967,13 @@ export async function listAdaptaRemoteChats(options: {
       password: options.account.password,
     })
     await ensureAdaptaProjectFolder(options.account.projectName, options.account.userId || options.account.userKey).catch(error => {
-      console.warn(`[Adapta] Could not ensure project "${options.account?.projectName}": ${error.message}`)
+      adaptaLogger.warn('project.ensure_failed', adaptaLogData(options, { error }))
     })
   }
   const headers = await getAdaptaSessionHeaders(options.account?.userId || options.account?.userKey)
   const folderId = await resolveProjectFolderId({
+    account: options.account,
+    requestId: options.requestId,
     folderId: options.folderId,
     projectName: options.projectName,
   })
@@ -847,11 +982,28 @@ export async function listAdaptaRemoteChats(options: {
   url.searchParams.set('page', String(options.page || 1))
   if (folderId) url.searchParams.set('folderId', folderId)
 
-  const response = await fetch(url, { headers })
+  const target = safeUpstreamTarget(url.toString())
+  adaptaLogger.info('remote_chats.list.started', adaptaLogData(options, target))
+  let response: Response
+  try {
+    response = await fetch(url, { headers })
+  } catch (error) {
+    adaptaLogger.error('remote_chats.list.failed', adaptaLogData(options, {
+      ...target,
+      durationMs: Date.now() - startedAt,
+      error,
+    }))
+    throw error
+  }
   const rawText = await response.text()
   if (!response.ok) {
+    adaptaLogger.error('remote_chats.list.failed', adaptaLogData(options, {
+      ...target,
+      status: response.status,
+      durationMs: Date.now() - startedAt,
+    }))
     throw new AdaptaUpstreamError(
-      `Adapta upstream error: ${response.status} ${response.statusText} - ${rawText.slice(0, 500)}`,
+      `Adapta upstream error: ${response.status} ${response.statusText}`,
       response.status,
     )
   }
@@ -867,7 +1019,7 @@ export async function listAdaptaRemoteChats(options: {
           ? payload.items
           : []
 
-  return items
+  const chats = items
     .filter((item: any) => typeof item?.id === 'string' || typeof item?.chatId === 'string')
     .map((item: any) => ({
       id: item.id || item.chatId,
@@ -877,11 +1029,20 @@ export async function listAdaptaRemoteChats(options: {
       updatedAt: item.updatedAt || item.updated_at,
       raw: item,
     }))
+  adaptaLogger.info('remote_chats.list.completed', adaptaLogData(options, {
+    ...target,
+    status: response.status,
+    durationMs: Date.now() - startedAt,
+    itemCount: chats.length,
+  }))
+  return chats
 }
 
 export async function deleteAdaptaRemoteChat(chatId: string, options: {
   account?: AdaptaAccountContext
+  requestId?: string
 } = {}): Promise<boolean> {
+  const startedAt = Date.now()
   if (options.account) {
     setAdaptaChatSessionsFile(options.account.chatSessionsFile)
     await usePlaywrightAccount({
@@ -891,7 +1052,7 @@ export async function deleteAdaptaRemoteChat(chatId: string, options: {
       password: options.account.password,
     })
     await ensureAdaptaProjectFolder(options.account.projectName, options.account.userId || options.account.userKey).catch(error => {
-      console.warn(`[Adapta] Could not ensure project "${options.account?.projectName}": ${error.message}`)
+      adaptaLogger.warn('project.ensure_failed', adaptaLogData(options, { error }))
     })
   }
   const headers = await getAdaptaSessionHeaders(options.account?.userId || options.account?.userKey)
@@ -901,16 +1062,44 @@ export async function deleteAdaptaRemoteChat(chatId: string, options: {
     `${config.adapta.baseUrl}/api/chat/v2/${encodeURIComponent(chatId)}`,
   ]
 
-  let lastError = ''
-  for (const url of candidates) {
-    const response = await fetch(url, { method: 'DELETE', headers })
+  let lastStatus = 502
+  for (const [index, url] of candidates.entries()) {
+    const target = safeUpstreamTarget(url)
+    const attemptStartedAt = Date.now()
+    adaptaLogger.info('remote_chats.delete_attempt.started', adaptaLogData(options, {
+      ...target,
+      attempt: index + 1,
+    }))
+    let response: Response
+    try {
+      response = await fetch(url, { method: 'DELETE', headers })
+    } catch (error) {
+      adaptaLogger.error('remote_chats.delete_attempt.failed', adaptaLogData(options, {
+        ...target,
+        attempt: index + 1,
+        durationMs: Date.now() - attemptStartedAt,
+        error,
+      }))
+      throw error
+    }
+    adaptaLogger.info('remote_chats.delete_attempt.completed', adaptaLogData(options, {
+      ...target,
+      attempt: index + 1,
+      status: response.status,
+      durationMs: Date.now() - attemptStartedAt,
+    }))
     if (response.ok || response.status === 204) return true
-    lastError = `${response.status} ${response.statusText} - ${(await response.text()).slice(0, 300)}`
+    lastStatus = response.status
+    await response.body?.cancel().catch(() => {})
     if (![404, 405].includes(response.status)) break
   }
 
+  adaptaLogger.error('remote_chats.delete_failed', adaptaLogData(options, {
+    status: lastStatus,
+    durationMs: Date.now() - startedAt,
+  }))
   throw new AdaptaUpstreamError(
-    `Could not delete Adapta remote chat "${chatId}". Tried known internal endpoints. Last response: ${lastError}`,
+    `Could not delete Adapta remote chat. Last upstream status: ${lastStatus}`,
     502,
   )
 }

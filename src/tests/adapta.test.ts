@@ -138,8 +138,8 @@ test('extracts structured Adapta refinement questions', () => {
 })
 
 test('redacts auth secrets from logs and errors', () => {
-  const redacted = redactSecrets('authorization: Bearer abc.def.ghi cookie: token=secret api_key=local-secret')
-  assert.equal(redacted.includes('ghi'), false)
+  const redacted = redactSecrets('authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123 cookie: token=secret api_key=local-secret')
+  assert.equal(redacted.includes('signature123'), false)
   assert.equal(redacted.includes('secret'), false)
   assert.match(redacted, /\[REDACTED\]/)
 })
@@ -249,9 +249,13 @@ test('/adaptaproxy/api/v1/models lists Adapta models with GPT_55 as default', as
 
   try {
     const response = await app.request('/adaptaproxy/api/v1/models', {
-      headers: createTestAuthHeaders(),
+      headers: {
+        ...createTestAuthHeaders(),
+        'X-Request-ID': 'test-models-request',
+      },
     })
     assert.equal(response.status, 200)
+    assert.equal(response.headers.get('X-Request-ID'), 'test-models-request')
 
     const body = await response.json() as any
     assert.equal(body.object, 'list')

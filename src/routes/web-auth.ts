@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { config } from '../core/config.ts'
+import { logger } from '../core/logger.ts'
 import {
   createUser,
   createWebSession,
@@ -12,10 +13,10 @@ import {
   verifyUserLogin,
 } from '../services/auth-store.ts'
 import { ensureAdaptaProjectFolder, loginWithCredentialsForAccount, usePlaywrightAccount } from '../services/playwright.ts'
-import { redactSecrets } from '../utils/redact.ts'
 import { getAdaptaConnectionErrorMessage } from '../utils/user-facing-error.ts'
 
 const app = new Hono()
+const webAuthLogger = logger.child('web-auth')
 
 function getCookie(header: string | undefined, name: string): string {
   if (!header) return ''
@@ -204,8 +205,13 @@ app.post('/adaptaproxy/account/adapta', async c => {
   const user = currentUser(c)
   if (!user) return c.redirect('/adaptaproxy/login')
   const body = await formBody(c)
+  const requestId = (c as any).get('requestId') as string | undefined
 
   try {
+    webAuthLogger.info('adapta_connection.started', {
+      requestId,
+      userId: user.id,
+    })
     const profileDir = `./adapta_profiles/users/${user.id}`
     await loginWithCredentialsForAccount({
       accountKey: user.id,
@@ -220,7 +226,11 @@ app.post('/adaptaproxy/account/adapta', async c => {
       password: body.password || '',
     })
     const project = await ensureAdaptaProjectFolder(config.adapta.projectName, user.id).catch(error => {
-      console.warn(`[web-auth] Could not ensure project: ${redactSecrets(error.message)}`)
+      webAuthLogger.warn('adapta_project.ensure_failed', {
+        requestId,
+        userId: user.id,
+        error,
+      })
       return null
     })
     saveAdaptaAccount({
@@ -231,6 +241,11 @@ app.post('/adaptaproxy/account/adapta', async c => {
       projectId: project?.id || null,
     })
     updateAdaptaAccountStatus(user.id, 'valid', project?.id || null)
+    webAuthLogger.info('adapta_connection.completed', {
+      requestId,
+      userId: user.id,
+      projectResolved: Boolean(project?.id),
+    })
     return html('Conta ADAPTA conectada', `
       <section class="panel">
         <h1>Conta ADAPTA conectada</h1>
@@ -239,7 +254,11 @@ app.post('/adaptaproxy/account/adapta', async c => {
       </section>
     `)
   } catch (error: any) {
-    console.error(`[web-auth] ADAPTA connection failed for user ${user.id}: ${redactSecrets(error)}`)
+    webAuthLogger.error('adapta_connection.failed', {
+      requestId,
+      userId: user.id,
+      error,
+    })
     return html('Erro ADAPTA', `
       <section class="panel">
         <h1>Conta ADAPTA</h1>
