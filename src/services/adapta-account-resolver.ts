@@ -86,8 +86,7 @@ export function resolveAdaptaAccountContext(options: { userKey?: string } = {}):
     chatSessionsFile: corporateChatSessionsFile(userKey),
     email: user.email,
     password: decryptCorporatePassword(user.encryptedPassword),
-    projectName: user.projectName || config.adapta.projectName,
-    projectId: user.projectId,
+    projectName: config.adapta.projectName,
   }
 }
 
@@ -105,7 +104,6 @@ export function accountContextFromAuthenticatedUser(input: {
     chatSessionsFile: userChatSessionsFile(input.user.id),
     email: input.adaptaAccount.adaptaEmail,
     password: decryptAdaptaPassword(input.adaptaAccount.encryptedAdaptaPassword),
-    projectName: input.adaptaAccount.projectName || config.adapta.projectName,
-    projectId: input.adaptaAccount.projectId || undefined,
+    projectName: config.adapta.projectName,
   }
 }

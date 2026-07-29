@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { serve } from '@hono/node-server'
 import { randomUUID } from 'node:crypto'
+import { createServer } from 'node:net'
 import { config } from '../core/config.js'
 import { logger } from '../core/logger.ts'
 import { metrics } from '../core/metrics.js'
@@ -23,6 +24,25 @@ const serverLogger = logger.child('server')
 let cache: MemoryCache
 let watchdog: Watchdog
 let server: any
+
+async function assertPortAvailable(host: string, port: number): Promise<void> {
+  if (port === 0) return
+
+  await new Promise<void>((resolve, reject) => {
+    const probe = createServer()
+    probe.unref()
+    probe.once('error', (error: NodeJS.ErrnoException) => {
+      if (error.code === 'EADDRINUSE') {
+        reject(new Error(`Port ${port} is already in use. Adaptaproxy will not open another Adapta browser session.`))
+        return
+      }
+      reject(error)
+    })
+    probe.listen(port, host, () => {
+      probe.close(closeError => closeError ? reject(closeError) : resolve())
+    })
+  })
+}
 
 app.use('*', async (c, next) => {
   const incomingRequestId = c.req.header('x-request-id')?.trim() || ''
@@ -167,6 +187,7 @@ app.onError((err, c) => {
 app.notFound((c) => c.json({ error: 'Not found' }, 404))
 
 export async function startServer(): Promise<void> {
+  await assertPortAvailable(config.server.host, config.server.port)
   cache = new MemoryCache()
   await cache.connect()
 

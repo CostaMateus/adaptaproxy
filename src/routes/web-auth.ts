@@ -225,14 +225,16 @@ app.post('/adaptaproxy/account/adapta', async c => {
       email: body.email || '',
       password: body.password || '',
     })
-    const project = await ensureAdaptaProjectFolder(config.adapta.projectName, user.id).catch(error => {
-      webAuthLogger.warn('adapta_project.ensure_failed', {
-        requestId,
-        userId: user.id,
-        error,
+    const project = config.adapta.projectName
+      ? await ensureAdaptaProjectFolder(config.adapta.projectName, user.id).catch(error => {
+        webAuthLogger.warn('adapta_project.ensure_failed', {
+          requestId,
+          userId: user.id,
+          error,
+        })
+        return null
       })
-      return null
-    })
+      : null
     saveAdaptaAccount({
       userId: user.id,
       adaptaEmail: body.email || '',

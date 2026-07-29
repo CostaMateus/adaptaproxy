@@ -89,6 +89,27 @@ export class Mutex {
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
+const MULTIPLE_SESSIONS_ERROR =
+  'A Adapta bloqueou esta conta por excesso de sessoes ativas. Desconecte os outros dispositivos na plataforma e tente novamente.'
+
+export function isAdaptaMultipleSessionsText(text: string): boolean {
+  return /muitas sess(?:o|õ)es ativas/i.test(text) ||
+    /limite de dispositivos conectados simultaneamente/i.test(text) ||
+    /too many active sessions/i.test(text) ||
+    /simultaneous device limit/i.test(text)
+}
+
+async function hasMultipleSessionsBlock(page: Page): Promise<boolean> {
+  const text = await page.locator('body').innerText({ timeout: 2000 }).catch(() => '')
+  return isAdaptaMultipleSessionsText(text)
+}
+
+async function assertNoMultipleSessionsBlock(page: Page | null): Promise<void> {
+  if (page && await hasMultipleSessionsBlock(page)) {
+    throw new Error(MULTIPLE_SESSIONS_ERROR)
+  }
+}
+
 function resolveConfiguredBrowserType(): BrowserType {
   return (process.env.BROWSER as BrowserType | undefined) || currentBrowserType || 'chromium'
 }
@@ -643,6 +664,7 @@ async function clearStoredAuthState(accountKey?: string): Promise<void> {
 async function ensureAuthenticatedSession(forceRefresh = false, accountKey?: string): Promise<void> {
   if (process.env.TEST_MOCK_PLAYWRIGHT) return
   const rt = runtime(accountKey)
+  await assertNoMultipleSessionsBlock(rt.activePage)
   if (!forceRefresh && await hasValidSession(accountKey).catch(() => false)) return
 
   if (!rt.autoLoginPromise) {
@@ -679,6 +701,7 @@ export async function hasValidSession(accountKey?: string): Promise<boolean> {
   if (process.env.TEST_MOCK_PLAYWRIGHT) return true
   const page = runtime(accountKey).activePage
   if (!page) return false
+  if (await hasMultipleSessionsBlock(page)) return false
 
   const url = page.url()
   return !url.includes('/sign-in') && !url.includes('/login') && await hasAuthState(page)
@@ -690,12 +713,14 @@ export async function getAdaptaSessionHeaders(accountKey?: string): Promise<Reco
   }
   let page = runtime(accountKey).activePage
   if (!page) throw new Error('Playwright not initialized')
+  await assertNoMultipleSessionsBlock(page)
 
   if (!(await hasValidSession(accountKey))) {
     await ensureAuthenticatedSession(false, accountKey)
   }
   page = runtime(accountKey).activePage
   if (!page) throw new Error('Playwright not initialized')
+  await assertNoMultipleSessionsBlock(page)
 
   const cookieHeader = (await page.context().cookies(config.adapta.baseUrl))
     .map(cookie => `${cookie.name}=${cookie.value}`)
@@ -794,6 +819,7 @@ export async function launchManualLogin(
 export async function waitForManualLogin(page: Page, timeoutMs = 0): Promise<void> {
   const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : 0
   while (true) {
+    await assertNoMultipleSessionsBlock(page)
     const url = page.url()
     if (!url.includes('/sign-in') && !url.includes('/login') && await hasAuthState(page)) {
       return

@@ -50,7 +50,9 @@ app.post('/v1/adapta/users/login', async c => {
     password: body.password,
   })
   setAdaptaChatSessionsFile(corporateChatSessionsFile(userKey))
-  const project = await ensureAdaptaProjectFolder(config.adapta.projectName)
+  const project = config.adapta.projectName
+    ? await ensureAdaptaProjectFolder(config.adapta.projectName)
+    : null
   const user = saveCorporateUser({
     userKey,
     email: body.email,

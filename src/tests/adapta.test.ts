@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { app } from '../api/server.ts'
 import { getAdaptaChatSessionByKey, touchAdaptaChatSessionMapping } from '../core/chat-sessions.ts'
-import { getDefaultAdaptaChatRequest } from '../services/playwright.ts'
+import { getDefaultAdaptaChatRequest, isAdaptaMultipleSessionsText } from '../services/playwright.ts'
 import {
   applyProjectFolderToPayload,
   extractRefinementQuestionsFromAdaptaPayload,
@@ -12,6 +12,7 @@ import {
   openAiMessagesToAdaptaMessages,
   openAiMessagesToPrompt,
   prepareAdaptaPayload,
+  removeProjectFolderFromPayload,
   replacePromptInPayload,
 } from '../services/adapta.ts'
 import { redactSecrets } from '../utils/redact.ts'
@@ -235,12 +236,16 @@ test('returns safe user-facing messages for Adapta connection errors', () => {
   const browserMissing = getAdaptaConnectionErrorMessage(
     new Error('Executable does not exist at C:\\private\\chrome.exe'),
   )
+  const multipleSessions = getAdaptaConnectionErrorMessage(
+    new Error('A Adapta bloqueou esta conta por excesso de sessoes ativas.'),
+  )
   const unexpected = getAdaptaConnectionErrorMessage(
     new Error('internal stack with C:\\private\\secret.txt'),
   )
 
   assert.match(browserClosed, /nova sessão com a ADAPTA/)
   assert.match(browserMissing, /navegador necessário/)
+  assert.match(multipleSessions, /limite de dispositivos/)
   assert.match(unexpected, /Não foi possível conectar sua conta ADAPTA/)
   assert.equal(browserClosed.includes('C:\\private'), false)
   assert.equal(browserMissing.includes('chrome.exe'), false)
@@ -290,6 +295,24 @@ test('applies project folder id to Adapta payload', () => {
   )
 
   assert.equal(applyProjectFolderToPayload(null, 'folder-1'), null)
+})
+
+test('removes a captured project folder when creating a root chat', () => {
+  assert.deepEqual(
+    removeProjectFolderFromPayload({ chatId: 'chat-1', folderId: 'folder-1', messages: [] }),
+    { chatId: 'chat-1', messages: [] },
+  )
+
+  assert.equal(removeProjectFolderFromPayload(null), null)
+})
+
+test('detects the Adapta multiple sessions blocking screen', () => {
+  assert.equal(isAdaptaMultipleSessionsText('Muitas sessões ativas'), true)
+  assert.equal(
+    isAdaptaMultipleSessionsText('Você atingiu o limite de dispositivos conectados simultaneamente.'),
+    true,
+  )
+  assert.equal(isAdaptaMultipleSessionsText('Chats'), false)
 })
 
 test('persists Adapta session key to remote chat id mapping', () => {
@@ -438,6 +461,7 @@ test('/adaptaproxy/api/v1/chat/completions streams only when explicitly requeste
     assert.equal(upstreamBodies[0].messages[0].content, 'System instructions')
     assert.equal(upstreamBodies[0].messages[1].role, 'user')
     assert.equal(upstreamBodies[0].messages[1].content, 'Ola')
+    assert.equal('folderId' in upstreamBodies[0], false)
 
     const streamResponse = await app.request('/adaptaproxy/api/v1/chat/completions', {
       method: 'POST',
@@ -460,6 +484,7 @@ test('/adaptaproxy/api/v1/chat/completions streams only when explicitly requeste
     assert.equal(upstreamBodies[1].messages.length, 1)
     assert.equal(upstreamBodies[1].messages[0].role, 'user')
     assert.equal(upstreamBodies[1].messages[0].content, 'Ola')
+    assert.equal('folderId' in upstreamBodies[1], false)
     assert.match(streamBody, /data: \[DONE\]/)
   } finally {
     globalThis.fetch = originalFetch

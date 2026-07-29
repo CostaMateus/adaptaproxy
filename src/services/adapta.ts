@@ -240,6 +240,12 @@ export function applyProjectFolderToPayload(payload: unknown, folderId: string):
   }
 }
 
+export function removeProjectFolderFromPayload(payload: unknown): unknown {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload
+  const { folderId: _folderId, ...rootChatPayload } = payload as Record<string, unknown>
+  return rootChatPayload
+}
+
 function replaceIdsInPayload(payload: unknown, chatId: string, messageId: string): unknown {
   if (Array.isArray(payload)) {
     return payload.map(value => replaceIdsInPayload(value, chatId, messageId))
@@ -607,9 +613,11 @@ async function buildAdaptaRequest(prompt: string, options: AdaptaRequestOptions 
     adaptaLogger.info('browser.account_activation.completed', adaptaLogData(options, {
       durationMs: Date.now() - browserStartedAt,
     }))
-    await ensureAdaptaProjectFolder(options.account.projectName, options.account.userId || options.account.userKey).catch(error => {
-      adaptaLogger.warn('project.ensure_failed', adaptaLogData(options, { error }))
-    })
+    if (options.account.projectName) {
+      await ensureAdaptaProjectFolder(options.account.projectName, options.account.userId || options.account.userKey).catch(error => {
+        adaptaLogger.warn('project.ensure_failed', adaptaLogData(options, { error }))
+      })
+    }
   }
 
   const accountKey = options.account?.userId || options.account?.userKey
@@ -631,7 +639,7 @@ async function buildAdaptaRequest(prompt: string, options: AdaptaRequestOptions 
   )
   const requestBody = projectFolderId
     ? applyProjectFolderToPayload(prepared.body, projectFolderId)
-    : prepared.body
+    : removeProjectFolderFromPayload(prepared.body)
 
   const request = {
     url: captured.url,
@@ -1098,9 +1106,11 @@ export async function listAdaptaRemoteChats(options: {
       email: options.account.email,
       password: options.account.password,
     })
-    await ensureAdaptaProjectFolder(options.account.projectName, options.account.userId || options.account.userKey).catch(error => {
-      adaptaLogger.warn('project.ensure_failed', adaptaLogData(options, { error }))
-    })
+    if (options.account.projectName) {
+      await ensureAdaptaProjectFolder(options.account.projectName, options.account.userId || options.account.userKey).catch(error => {
+        adaptaLogger.warn('project.ensure_failed', adaptaLogData(options, { error }))
+      })
+    }
   }
   const headers = await getAdaptaSessionHeaders(options.account?.userId || options.account?.userKey)
   const folderId = await resolveProjectFolderId({
@@ -1183,9 +1193,11 @@ export async function deleteAdaptaRemoteChat(chatId: string, options: {
       email: options.account.email,
       password: options.account.password,
     })
-    await ensureAdaptaProjectFolder(options.account.projectName, options.account.userId || options.account.userKey).catch(error => {
-      adaptaLogger.warn('project.ensure_failed', adaptaLogData(options, { error }))
-    })
+    if (options.account.projectName) {
+      await ensureAdaptaProjectFolder(options.account.projectName, options.account.userId || options.account.userKey).catch(error => {
+        adaptaLogger.warn('project.ensure_failed', adaptaLogData(options, { error }))
+      })
+    }
   }
   const headers = await getAdaptaSessionHeaders(options.account?.userId || options.account?.userKey)
   const candidates = [

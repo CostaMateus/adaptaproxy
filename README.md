@@ -76,7 +76,7 @@ O `.env` aceita:
 
 ```env
 ADAPTA_ACCOUNT_MODE=PERSONAL
-ADAPTA_PROJECT_NAME=PROXY
+ADAPTA_PROJECT_NAME=
 ```
 
 Em `PERSONAL`, o proxy usa a conta configurada em `ADAPTA_EMAIL`/`ADAPTA_PASSWORD` ou a sessão manual salva no perfil pessoal.
@@ -399,7 +399,7 @@ A exclusão remota depende do endpoint interno atual da Adapta. Se a UI mudar, o
 | `ADAPTA_CHAT_URL` | `https://agent.adapta.one/agentic-chat` | Tela de chat usada para login e descoberta |
 | `ADAPTA_MODEL_ID` | `GPT_55` | Modelo padrão; `/adaptaproxy/api/v1/models` lista as opções suportadas pela Adapta |
 | `ADAPTA_PROMPT_MODE` | `last_user` | Formato global do prompt: `structured`, `full` ou `last_user` |
-| `ADAPTA_PROJECT_NAME` | `PROXY` | Nome do projeto/pasta validado ou criado no primeiro uso da conta |
+| `ADAPTA_PROJECT_NAME` | vazio | Nome opcional de um projeto/pasta; vazio cria os chats na raiz do menu `Chats` |
 
 Para criar novos chats sempre dentro do projeto `nome_da_pasta`:
 
@@ -408,6 +408,20 @@ ADAPTA_PROJECT_NAME=nome_da_pasta
 ```
 
 Se o projeto configurado não existir na Adapta, o proxy retorna erro claro em vez de criar o chat fora da pasta.
+
+Com `ADAPTA_PROJECT_NAME=` (configuração padrão), o proxy remove qualquer `folderId` residual do payload capturado e cria o chat na raiz da plataforma. A pasta `PROXY` não é criada nem utilizada automaticamente.
+
+### Limite de sessões da Adapta
+
+O servidor mantém uma sessão Chromium headless autenticada, que aparece como um dispositivo `X11` na Adapta. O Adaptaproxy detecta a tela `Muitas sessões ativas` como bloqueio e não a considera um login válido.
+
+Para recuperar uma conta que atingiu o limite:
+
+1. Pare instâncias antigas do Adaptaproxy.
+2. Na tela da Adapta, use `Desconectar todos os outros`.
+3. Inicie uma única instância do Adaptaproxy.
+
+Antes de abrir o Chromium, o servidor verifica se sua porta já está em uso. Isso evita que tentativas duplicadas de inicialização criem sessões adicionais.
 
 ## Logs e diagnóstico
 

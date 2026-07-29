@@ -4,6 +4,10 @@ const GENERIC_ADAPTA_CONNECTION_ERROR =
 export function getAdaptaConnectionErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error ?? '')
 
+  if (/excesso de sessoes ativas|muitas sess(?:o|õ)es ativas|limite de dispositivos/i.test(message)) {
+    return 'A ADAPTA atingiu o limite de dispositivos conectados. Desconecte as outras sessoes na plataforma e tente novamente.'
+  }
+
   if (/executable does(?: not|n't) exist/i.test(message)) {
     return 'O navegador necessário para conectar sua conta está indisponível no servidor. Entre em contato com o suporte.'
   }
