@@ -29,6 +29,7 @@ export interface AdaptaSessionDiagnostics {
 
 interface PlaywrightRuntime {
   context: BrowserContext | null
+  loginContext: BrowserContext | null
   activePage: Page | null
   cachedChatRequest: CapturedAdaptaRequest | null
   cachedProjectFolders: AdaptaProjectFolder[] | null
@@ -37,12 +38,14 @@ interface PlaywrightRuntime {
   currentCredentials: { email: string, password: string } | null
   autoLoginPromise: Promise<void> | null
   discoveryMutex: Mutex
+  loginMutex: Mutex
   pageOperationMutex: Mutex
 }
 
 function createRuntime(): PlaywrightRuntime {
   return {
     context: null,
+    loginContext: null,
     activePage: null,
     cachedChatRequest: null,
     cachedProjectFolders: null,
@@ -51,6 +54,7 @@ function createRuntime(): PlaywrightRuntime {
     currentCredentials: null,
     autoLoginPromise: null,
     discoveryMutex: new Mutex(),
+    loginMutex: new Mutex(),
     pageOperationMutex: new Mutex(),
   }
 }
@@ -567,6 +571,9 @@ async function closePlaywrightAccount(accountKey?: string): Promise<void> {
   rt.cachedChatRequest = null
   rt.cachedProjectFolders = null
   rt.cachedAuthorizationHeader = null
+  const loginContext = rt.loginContext
+  rt.loginContext = null
+  await loginContext?.close().catch(() => {})
   await rt.context?.close()
   rt.context = null
   rt.activePage = null
@@ -600,15 +607,21 @@ async function runCredentialLogin(accountKey?: string): Promise<void> {
     return
   }
 
-  const { context: loginContext, page } = await launchManualLogin(resolveConfiguredBrowserType(), {
-    profileDir: rt.currentProfileDir || undefined,
-  })
+  const release = await rt.loginMutex.acquire()
   try {
+    const { context: loginContext, page } = await launchManualLogin(resolveConfiguredBrowserType(), {
+      profileDir: rt.currentProfileDir || undefined,
+      headless: config.browser.headless,
+    })
+    rt.loginContext = loginContext
     await tryCredentialLogin(page, rt.currentCredentials.email, rt.currentCredentials.password)
       .catch(error => console.warn(`[Playwright] Credential login did not complete automatically: ${error.message}`))
-    await waitForManualLogin(page)
+    await waitForManualLogin(page, config.timeouts.chat)
   } finally {
-    await loginContext.close()
+    const loginContext = rt.loginContext
+    rt.loginContext = null
+    await loginContext?.close().catch(() => {})
+    release()
   }
 }
 
@@ -758,11 +771,11 @@ export async function getAdaptaSessionDiagnostics(accountKey?: string): Promise<
 
 export async function launchManualLogin(
   browserType: BrowserType = 'chromium',
-  options: { profileDir?: string } = {},
+  options: { profileDir?: string, headless?: boolean } = {},
 ): Promise<{ context: BrowserContext, page: Page }> {
   const { engine, channel } = getBrowser(browserType)
   const loginContext = await engine.launchPersistentContext(profilePath(options.profileDir || defaultRuntime.currentProfileDir), {
-    headless: false,
+    headless: options.headless ?? false,
     channel,
     userAgent: config.browser.userAgent,
     ignoreDefaultArgs: ['--enable-automation'],
@@ -778,11 +791,15 @@ export async function launchManualLogin(
   return { context: loginContext, page }
 }
 
-export async function waitForManualLogin(page: Page): Promise<void> {
+export async function waitForManualLogin(page: Page, timeoutMs = 0): Promise<void> {
+  const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : 0
   while (true) {
     const url = page.url()
     if (!url.includes('/sign-in') && !url.includes('/login') && await hasAuthState(page)) {
       return
+    }
+    if (deadline && Date.now() >= deadline) {
+      throw new Error('Timed out waiting for Adapta authentication.')
     }
     await sleep(2000)
   }
@@ -805,17 +822,24 @@ export async function loginWithCredentialsForAccount(options: {
   browserType?: BrowserType
 }): Promise<void> {
   const rt = runtime(options.accountKey)
-  rt.currentProfileDir = path.resolve(options.profileDir)
-  rt.currentCredentials = { email: options.email, password: options.password }
-  const { context: loginContext, page } = await launchManualLogin(options.browserType || resolveConfiguredBrowserType(), {
-    profileDir: rt.currentProfileDir,
-  })
+  const release = await rt.loginMutex.acquire()
   try {
+    await closePlaywrightAccount(options.accountKey)
+    rt.currentProfileDir = path.resolve(options.profileDir)
+    rt.currentCredentials = { email: options.email, password: options.password }
+    const { context: loginContext, page } = await launchManualLogin(options.browserType || resolveConfiguredBrowserType(), {
+      profileDir: rt.currentProfileDir,
+      headless: config.browser.headless,
+    })
+    rt.loginContext = loginContext
     await tryCredentialLogin(page, options.email, options.password)
       .catch(error => console.warn(`[Playwright] Credential login did not complete automatically: ${error.message}`))
-    await waitForManualLogin(page)
+    await waitForManualLogin(page, config.timeouts.chat)
   } finally {
-    await loginContext.close()
+    const loginContext = rt.loginContext
+    rt.loginContext = null
+    await loginContext?.close().catch(() => {})
+    release()
   }
 }
 

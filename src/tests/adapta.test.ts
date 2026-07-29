@@ -13,6 +13,7 @@ import {
   replacePromptInPayload,
 } from '../services/adapta.ts'
 import { redactSecrets } from '../utils/redact.ts'
+import { getAdaptaConnectionErrorMessage } from '../utils/user-facing-error.ts'
 import { createUser, generateApiKeyForUser, saveAdaptaAccount } from '../services/auth-store.ts'
 
 function createTestAuthHeaders(): Record<string, string> {
@@ -141,6 +142,25 @@ test('redacts auth secrets from logs and errors', () => {
   assert.equal(redacted.includes('ghi'), false)
   assert.equal(redacted.includes('secret'), false)
   assert.match(redacted, /\[REDACTED\]/)
+})
+
+test('returns safe user-facing messages for Adapta connection errors', () => {
+  const browserClosed = getAdaptaConnectionErrorMessage(
+    new Error('Target page, context or browser has been closed C:\\private\\profile'),
+  )
+  const browserMissing = getAdaptaConnectionErrorMessage(
+    new Error('Executable does not exist at C:\\private\\chrome.exe'),
+  )
+  const unexpected = getAdaptaConnectionErrorMessage(
+    new Error('internal stack with C:\\private\\secret.txt'),
+  )
+
+  assert.match(browserClosed, /nova sessão com a ADAPTA/)
+  assert.match(browserMissing, /navegador necessário/)
+  assert.match(unexpected, /Não foi possível conectar sua conta ADAPTA/)
+  assert.equal(browserClosed.includes('C:\\private'), false)
+  assert.equal(browserMissing.includes('chrome.exe'), false)
+  assert.equal(unexpected.includes('secret.txt'), false)
 })
 
 test('prepares Adapta payload with explicit chat and message ids', () => {

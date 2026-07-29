@@ -13,6 +13,7 @@ import {
 } from '../services/auth-store.ts'
 import { ensureAdaptaProjectFolder, loginWithCredentialsForAccount, usePlaywrightAccount } from '../services/playwright.ts'
 import { redactSecrets } from '../utils/redact.ts'
+import { getAdaptaConnectionErrorMessage } from '../utils/user-facing-error.ts'
 
 const app = new Hono()
 
@@ -238,10 +239,11 @@ app.post('/adaptaproxy/account/adapta', async c => {
       </section>
     `)
   } catch (error: any) {
+    console.error(`[web-auth] ADAPTA connection failed for user ${user.id}: ${redactSecrets(error)}`)
     return html('Erro ADAPTA', `
       <section class="panel">
         <h1>Conta ADAPTA</h1>
-        <p class="danger">${escapeHtml(redactSecrets(error.message || 'Nao foi possivel conectar a conta ADAPTA.'))}</p>
+        <p class="danger">${escapeHtml(getAdaptaConnectionErrorMessage(error))}</p>
         <p><a class="button" href="/adaptaproxy/account">Voltar</a></p>
       </section>
     `)
