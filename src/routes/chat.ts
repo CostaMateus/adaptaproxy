@@ -4,7 +4,12 @@ import { v4 as uuidv4 } from 'uuid'
 import { config } from '../core/config.ts'
 import { logger } from '../core/logger.ts'
 import { metrics } from '../core/metrics.js'
-import { createAdaptaCompletion, createAdaptaCompletionStream, openAiMessagesToPrompt } from '../services/adapta.ts'
+import {
+  createAdaptaCompletion,
+  createAdaptaCompletionStream,
+  openAiMessagesToPrompt,
+  type AdaptaPromptMode,
+} from '../services/adapta.ts'
 import { OpenAIRequest } from '../utils/types.ts'
 import { redactSecrets } from '../utils/redact.ts'
 
@@ -13,6 +18,7 @@ const chatLogger = logger.child('chat')
 interface CompletionMetadata {
   adapta_chat_id: string
   adapta_session_key?: string
+  adapta_prompt_mode?: AdaptaPromptMode
   adapta_refinement_questions?: unknown[]
 }
 
@@ -23,6 +29,16 @@ function requestedAdaptaChatMode(value: unknown, headerValue: string | undefined
   if (!mode) return undefined
   if (mode === 'reuse' || mode === 'new' || mode === 'specific') return mode
   throw Object.assign(new Error('`metadata.adapta_chat_mode` must be one of: reuse, new, specific'), { status: 400 })
+}
+
+function requestedAdaptaPromptMode(value: unknown, headerValue: string | undefined): AdaptaPromptMode {
+  const mode = typeof value === 'string' ? value : headerValue
+  if (!mode) return config.adapta.promptMode
+  if (mode === 'full' || mode === 'structured' || mode === 'last_user') return mode
+  throw Object.assign(
+    new Error('`metadata.adapta_prompt_mode` must be one of: full, structured, last_user'),
+    { status: 400 },
+  )
 }
 
 function estimateTokens(text: string): number {
@@ -72,9 +88,14 @@ export async function chatCompletions(c: Context) {
     const body: OpenAIRequest = await c.req.json()
     const model = body.model || config.adapta.modelId
     const messages = body.messages || []
+    const promptMode = requestedAdaptaPromptMode(
+      body.metadata?.adapta_prompt_mode,
+      c.req.header('x-adapta-prompt-mode') || undefined,
+    )
     chatLogger.info('completion.started', {
       requestId,
       model,
+      promptMode,
       stream: body.stream === true,
       messageCount: Array.isArray(messages) ? messages.length : 0,
       toolCount: Array.isArray(body.tools) ? body.tools.length : 0,
@@ -109,6 +130,8 @@ export async function chatCompletions(c: Context) {
     const adaptaOptions = {
       account,
       requestId,
+      promptMode,
+      messages,
       chatId: requestedChatId,
       sessionKey: requestedSessionKey,
       newChat: requestedNewChat,
@@ -136,6 +159,7 @@ export async function chatCompletions(c: Context) {
       return c.json(completionPayload(completionId, model, completion.content, prompt, {
         adapta_chat_id: completion.chatId,
         adapta_session_key: requestedChatId ? undefined : requestedSessionKey,
+        adapta_prompt_mode: promptMode,
         ...(completion.refinementQuestions.length
           ? { adapta_refinement_questions: completion.refinementQuestions }
           : {}),
@@ -163,6 +187,7 @@ export async function chatCompletions(c: Context) {
         metadata: {
           ...(requestedChatId ? { adapta_chat_id: requestedChatId } : {}),
           ...(!requestedChatId ? { adapta_session_key: requestedSessionKey } : {}),
+          adapta_prompt_mode: promptMode,
         },
         choices: [{
           index: 0,
@@ -183,7 +208,10 @@ export async function chatCompletions(c: Context) {
           object: 'chat.completion.chunk',
           created,
           model,
-          metadata: streamChatId ? { adapta_chat_id: streamChatId } : undefined,
+          metadata: {
+            ...(streamChatId ? { adapta_chat_id: streamChatId } : {}),
+            adapta_prompt_mode: promptMode,
+          },
           choices: [{
             index: 0,
             delta: delta.type === 'reasoning'
@@ -213,6 +241,7 @@ export async function chatCompletions(c: Context) {
         metadata: {
           adapta_chat_id: completion.chatId,
           adapta_session_key: requestedChatId ? undefined : requestedSessionKey,
+          adapta_prompt_mode: promptMode,
           ...(completion.refinementQuestions.length
             ? { adapta_refinement_questions: completion.refinementQuestions }
             : {}),
@@ -229,6 +258,7 @@ export async function chatCompletions(c: Context) {
         const payload = completionPayload(completionId, model, streamedContent || completion.content, prompt, {
           adapta_chat_id: completion.chatId,
           adapta_session_key: requestedChatId ? undefined : requestedSessionKey,
+          adapta_prompt_mode: promptMode,
           ...(completion.refinementQuestions.length
             ? { adapta_refinement_questions: completion.refinementQuestions }
             : {}),
@@ -241,6 +271,7 @@ export async function chatCompletions(c: Context) {
           metadata: {
             adapta_chat_id: completion.chatId,
             adapta_session_key: requestedChatId ? undefined : requestedSessionKey,
+            adapta_prompt_mode: promptMode,
           },
           choices: [],
           usage: payload.usage,

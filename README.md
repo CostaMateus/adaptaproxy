@@ -202,6 +202,7 @@ O endpoint `/chat/completions` continua compatível com clientes OpenAI, mas o A
 | `metadata.adapta_session_key` | Nome lógico da conversa. Chamadas com a mesma key reutilizam o chat remoto salvo |
 | `metadata.adapta_chat_id` | ID de um chat remoto específico da Adapta |
 | `metadata.adapta_new_chat` | Boolean legado; equivalente a `metadata.adapta_chat_mode: "new"` |
+| `metadata.adapta_prompt_mode` | Formato enviado à Adapta: `structured`, `full` ou `last_user` |
 
 Modos:
 
@@ -212,6 +213,31 @@ Modos:
 | `specific` | Usa exatamente o chat de `adapta_chat_id`; exige `metadata.adapta_chat_id` |
 
 Sem `metadata.adapta_chat_id` e sem `metadata.adapta_session_key`, a chamada usa a session key padrão (`ADAPTA_DEFAULT_CHAT_ID`). Na primeira chamada dessa session key, o Adaptaproxy cria um chat remoto real na Adapta e salva o mapeamento em `CHAT_SESSIONS_FILE`. Nas próximas chamadas, ele reutiliza o `remoteChatId` salvo.
+
+### Formato do prompt
+
+O modo padrão é `last_user`. Para requisições do Cline, ele extrai o conteúdo entre `<task>...</task>`, evitando enviar à Adapta o prompt de sistema, a lista de ferramentas e `environment_details`.
+
+| Modo | Comportamento |
+| --- | --- |
+| `structured` | Converte cada mensagem OpenAI em uma mensagem separada no payload da Adapta. A Adapta aceita o formato, mas pode não respeitar o papel `system` |
+| `full` | Compatibilidade legada: concatena tudo como `System:`, `User:` e `Assistant:` em uma única mensagem |
+| `last_user` | Envia somente o conteúdo da última mensagem com papel `user`; é o padrão |
+
+O modo pode ser escolhido por request usando `metadata.adapta_prompt_mode` ou o header `x-adapta-prompt-mode`. A variável `ADAPTA_PROMPT_MODE` define o padrão global.
+
+```json
+{
+  "model": "GPT_55",
+  "metadata": {
+    "adapta_prompt_mode": "last_user"
+  },
+  "messages": [
+    { "role": "system", "content": "Responda em português." },
+    { "role": "user", "content": "Olá, qual o seu nome?" }
+  ]
+}
+```
 
 ```json
 {
@@ -372,6 +398,7 @@ A exclusão remota depende do endpoint interno atual da Adapta. Se a UI mudar, o
 | `ADAPTA_BASE_URL` | `https://agent.adapta.one` | Origem da Adapta |
 | `ADAPTA_CHAT_URL` | `https://agent.adapta.one/agentic-chat` | Tela de chat usada para login e descoberta |
 | `ADAPTA_MODEL_ID` | `GPT_55` | Modelo padrão; `/adaptaproxy/api/v1/models` lista as opções suportadas pela Adapta |
+| `ADAPTA_PROMPT_MODE` | `last_user` | Formato global do prompt: `structured`, `full` ou `last_user` |
 | `ADAPTA_PROJECT_NAME` | `PROXY` | Nome do projeto/pasta validado ou criado no primeiro uso da conta |
 
 Para criar novos chats sempre dentro do projeto `nome_da_pasta`:

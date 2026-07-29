@@ -8,6 +8,8 @@ import {
   extractRefinementQuestionsFromAdaptaPayload,
   extractTextFromAdaptaPayload,
   formatRefinementQuestions,
+  lastUserMessageToPrompt,
+  openAiMessagesToAdaptaMessages,
   openAiMessagesToPrompt,
   prepareAdaptaPayload,
   replacePromptInPayload,
@@ -49,6 +51,88 @@ test('converts OpenAI messages into an Adapta prompt', () => {
     'Assistant: Oi',
     'User: Continue',
   ].join('\n\n'))
+})
+
+test('converts OpenAI messages into structured Adapta messages', () => {
+  const messages = openAiMessagesToAdaptaMessages([
+    { role: 'system', content: 'Responda em portugues.' },
+    { role: 'user', content: 'Ola, qual o seu nome?' },
+  ], 'final-message-id')
+
+  assert.equal(messages.length, 2)
+  assert.equal(messages[0].role, 'system')
+  assert.equal(messages[0].content, 'Responda em portugues.')
+  assert.equal(messages[0].parts[0].text, 'Responda em portugues.')
+  assert.notEqual(messages[0].id, 'final-message-id')
+  assert.deepEqual(messages[1], {
+    id: 'final-message-id',
+    role: 'user',
+    content: 'Ola, qual o seu nome?',
+    parts: [{ type: 'text', text: 'Ola, qual o seu nome?' }],
+  })
+})
+
+test('prepares structured payload without merging system and user content', () => {
+  const prepared = prepareAdaptaPayload({
+    chatId: 'old-chat',
+    id: 'old-chat',
+    trigger: 'submit-message',
+    messages: [{ id: 'old-message', role: 'user', content: 'old' }],
+  }, 'System: hidden instructions\n\nUser: visible question', 'chat-1', 'message-1', {
+    mode: 'structured',
+    messages: [
+      { role: 'system', content: 'hidden instructions' },
+      { role: 'user', content: 'visible question' },
+    ],
+  })
+
+  const body = prepared.body as any
+  assert.equal(body.chatId, 'chat-1')
+  assert.equal(body.id, 'chat-1')
+  assert.equal(body.messages.length, 2)
+  assert.equal(body.messages[0].role, 'system')
+  assert.equal(body.messages[0].content, 'hidden instructions')
+  assert.equal(body.messages[1].role, 'user')
+  assert.equal(body.messages[1].content, 'visible question')
+  assert.equal(JSON.stringify(body.messages).includes('System:'), false)
+})
+
+test('last_user mode forwards only the latest user message', () => {
+  const input = [
+    { role: 'system', content: 'large system prompt' },
+    { role: 'user', content: 'first question' },
+    { role: 'assistant', content: 'first answer' },
+    { role: 'user', content: 'latest question' },
+  ]
+  assert.equal(lastUserMessageToPrompt(input), 'latest question')
+
+  const prepared = prepareAdaptaPayload({
+    messages: [{ role: 'user', content: 'old' }],
+  }, openAiMessagesToPrompt(input), 'chat-1', 'message-1', {
+    mode: 'last_user',
+    messages: input,
+  })
+  assert.equal((prepared.body as any).messages[0].content, 'latest question')
+})
+
+test('last_user mode extracts only the Cline task envelope', () => {
+  const content = [
+    '<task>',
+    'Olá, qual o seu nome?',
+    '</task>',
+    '',
+    '<environment_details>',
+    'workspace: C:\\private\\project',
+    '</environment_details>',
+  ].join('\n')
+
+  assert.equal(
+    lastUserMessageToPrompt([
+      { role: 'system', content: 'large Cline system prompt' },
+      { role: 'user', content },
+    ]),
+    'Olá, qual o seu nome?',
+  )
 })
 
 test('replaces prompt in captured payload shapes', () => {
@@ -286,16 +370,37 @@ test('/adaptaproxy/api/v1/chat/completions validates adapta_chat_mode', async ()
   assert.match(body.error.message, /adapta_chat_id/)
 })
 
+test('/adaptaproxy/api/v1/chat/completions validates adapta_prompt_mode', async () => {
+  const authHeaders = createTestAuthHeaders()
+  const response = await app.request('/adaptaproxy/api/v1/chat/completions', {
+    method: 'POST',
+    body: JSON.stringify({
+      model: 'GPT_55',
+      metadata: {
+        adapta_prompt_mode: 'invalid',
+      },
+      messages: [{ role: 'user', content: 'Ola' }],
+    }),
+    headers: { ...authHeaders, 'Content-Type': 'application/json' },
+  })
+
+  assert.equal(response.status, 400)
+  const body = await response.json() as any
+  assert.match(body.error.message, /adapta_prompt_mode/)
+})
+
 test('/adaptaproxy/api/v1/chat/completions streams only when explicitly requested', async () => {
   const authHeaders = createTestAuthHeaders()
   const originalFetch = globalThis.fetch
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
+  const upstreamBodies: any[] = []
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     if (url.includes('/api/folders')) {
       return new Response(JSON.stringify({ data: [{ id: 'folder-1', name: 'PROXY' }] }), {
         headers: { 'Content-Type': 'application/json' },
       })
     }
+    upstreamBodies.push(JSON.parse(String(init?.body)))
     return new Response([
       'data: {"type":"reasoning-delta","delta":"Thinking"}\n\n',
       'data: {"type":"text-delta","delta":"O"}\n\n',
@@ -311,7 +416,13 @@ test('/adaptaproxy/api/v1/chat/completions streams only when explicitly requeste
       method: 'POST',
       body: JSON.stringify({
         model: 'GPT_55',
-        messages: [{ role: 'user', content: 'Ola' }],
+        metadata: {
+          adapta_prompt_mode: 'structured',
+        },
+        messages: [
+          { role: 'system', content: 'System instructions' },
+          { role: 'user', content: 'Ola' },
+        ],
       }),
       headers: { ...authHeaders, 'Content-Type': 'application/json' },
     })
@@ -321,6 +432,12 @@ test('/adaptaproxy/api/v1/chat/completions streams only when explicitly requeste
     const jsonBody = await jsonResponse.json() as any
     assert.equal(jsonBody.choices[0].message.content, 'OK')
     assert.equal(jsonBody.choices[0].message.reasoning_content, 'Thinking')
+    assert.equal(jsonBody.metadata.adapta_prompt_mode, 'structured')
+    assert.equal(upstreamBodies[0].messages.length, 2)
+    assert.equal(upstreamBodies[0].messages[0].role, 'system')
+    assert.equal(upstreamBodies[0].messages[0].content, 'System instructions')
+    assert.equal(upstreamBodies[0].messages[1].role, 'user')
+    assert.equal(upstreamBodies[0].messages[1].content, 'Ola')
 
     const streamResponse = await app.request('/adaptaproxy/api/v1/chat/completions', {
       method: 'POST',
@@ -339,6 +456,10 @@ test('/adaptaproxy/api/v1/chat/completions streams only when explicitly requeste
     assert.match(streamBody, /"reasoning_content":"Thinking"/)
     assert.match(streamBody, /"content":"O"/)
     assert.match(streamBody, /"content":"K"/)
+    assert.match(streamBody, /"adapta_prompt_mode":"last_user"/)
+    assert.equal(upstreamBodies[1].messages.length, 1)
+    assert.equal(upstreamBodies[1].messages[0].role, 'user')
+    assert.equal(upstreamBodies[1].messages[0].content, 'Ola')
     assert.match(streamBody, /data: \[DONE\]/)
   } finally {
     globalThis.fetch = originalFetch

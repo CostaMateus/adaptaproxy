@@ -20,9 +20,13 @@ import {
 } from './playwright.ts'
 import { AdaptaAccountContext } from './adapta-account-resolver.ts'
 
+export type AdaptaPromptMode = 'full' | 'structured' | 'last_user'
+
 export interface AdaptaRequestOptions {
   account?: AdaptaAccountContext
   requestId?: string
+  promptMode?: AdaptaPromptMode
+  messages?: Message[]
   chatId?: string
   sessionKey?: string
   newChat?: boolean
@@ -85,6 +89,65 @@ export function openAiMessagesToPrompt(messages: Message[]): string {
     .join('\n\n')
 }
 
+export function lastUserMessageToPrompt(messages: Message[]): string {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (messages[index]?.role !== 'user') continue
+    return extractClineTask(stringifyMessageContent(messages[index].content))
+  }
+
+  const lastMessage = messages[messages.length - 1]
+  return lastMessage ? extractClineTask(stringifyMessageContent(lastMessage.content)) : ''
+}
+
+function extractClineTask(content: string): string {
+  const task = content.match(/<task>\s*([\s\S]*?)\s*<\/task>/i)
+  return task?.[1]?.trim() || content
+}
+
+export interface AdaptaStructuredMessage {
+  id: string
+  role: 'system' | 'user' | 'assistant'
+  content: string
+  parts: Array<{ type: 'text', text: string }>
+}
+
+export function openAiMessagesToAdaptaMessages(
+  messages: Message[],
+  finalMessageId: string,
+): AdaptaStructuredMessage[] {
+  return messages.map((message, index) => {
+    const originalRole = message.role
+    const role = originalRole === 'system' || originalRole === 'assistant'
+      ? originalRole
+      : 'user'
+    let content = stringifyMessageContent(message.content)
+
+    if (originalRole === 'tool' || originalRole === 'function') {
+      content = `Tool Response${message.name ? ` (${message.name})` : ''}: ${content}`
+    } else if (!['system', 'user', 'assistant'].includes(originalRole)) {
+      content = `${originalRole}: ${content}`
+    }
+
+    if (Array.isArray(message.tool_calls) && message.tool_calls.length) {
+      const toolCalls = message.tool_calls.map(toolCall => ({
+        id: toolCall.id,
+        name: toolCall.function.name,
+        arguments: toolCall.function.arguments,
+      }))
+      content = [content, `Tool calls:\n${JSON.stringify(toolCalls)}`]
+        .filter(Boolean)
+        .join('\n\n')
+    }
+
+    return {
+      id: index === messages.length - 1 ? finalMessageId : newAdaptaMessageId(),
+      role,
+      content,
+      parts: [{ type: 'text', text: content }],
+    }
+  })
+}
+
 function stringifyMessageContent(content: unknown): string {
   if (content == null) return ''
   if (typeof content === 'string') return content
@@ -109,14 +172,64 @@ export function replacePromptInPayload(payload: unknown, prompt: string): unknow
   return { message: prompt }
 }
 
-export function prepareAdaptaPayload(payload: unknown, prompt: string, chatId: string, messageId = newAdaptaMessageId()): {
+export function prepareAdaptaPayload(
+  payload: unknown,
+  prompt: string,
+  chatId: string,
+  messageId = newAdaptaMessageId(),
+  options: {
+    mode?: AdaptaPromptMode
+    messages?: Message[]
+  } = {},
+): {
   body: unknown
   chatId: string
   messageId: string
 } {
-  const body = replacePromptInPayload(payload, prompt)
+  const mode = options.mode || 'full'
+  if (mode === 'structured') {
+    if (!options.messages?.length) {
+      throw new Error('Structured prompt mode requires at least one OpenAI message.')
+    }
+    const patched = replaceIdsInPayload(payload, chatId, messageId)
+    const state = { replaced: false }
+    const structuredMessages = openAiMessagesToAdaptaMessages(options.messages, messageId)
+    const body = replaceMessagesInPayload(patched, structuredMessages, state)
+    if (!state.replaced) {
+      throw new Error('Structured prompt mode requires an Adapta payload with a messages array.')
+    }
+    return { body, chatId, messageId }
+  }
+
+  const lastUserPrompt = lastUserMessageToPrompt(options.messages || [])
+  const effectivePrompt = mode === 'last_user' && lastUserPrompt
+    ? lastUserPrompt
+    : prompt
+  const body = replacePromptInPayload(payload, effectivePrompt)
   const patched = replaceIdsInPayload(body, chatId, messageId)
   return { body: patched, chatId, messageId }
+}
+
+function replaceMessagesInPayload(
+  payload: unknown,
+  messages: AdaptaStructuredMessage[],
+  state: { replaced: boolean },
+): unknown {
+  if (Array.isArray(payload)) {
+    return payload.map(value => replaceMessagesInPayload(value, messages, state))
+  }
+  if (!payload || typeof payload !== 'object') return payload
+
+  const output: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(payload as Record<string, unknown>)) {
+    if (key === 'messages' && Array.isArray(value)) {
+      output[key] = messages
+      state.replaced = true
+      continue
+    }
+    output[key] = replaceMessagesInPayload(value, messages, state)
+  }
+  return output
 }
 
 export function applyProjectFolderToPayload(payload: unknown, folderId: string): unknown {
@@ -234,6 +347,7 @@ function replaceMessagesArray(messages: unknown[], prompt: string): unknown[] {
     if (!message || typeof message !== 'object') continue
     const record = message as Record<string, unknown>
     if (record.role === 'user' || typeof record.content === 'string' || typeof record.message === 'string') {
+      let replaced = false
       if (Array.isArray(record.parts)) {
         record.parts = record.parts.map(part => {
           if (!part || typeof part !== 'object') return part
@@ -241,11 +355,17 @@ function replaceMessagesArray(messages: unknown[], prompt: string): unknown[] {
           if (typeof partRecord.text === 'string') partRecord.text = prompt
           return partRecord
         })
-      } else if ('content' in record) {
+        replaced = true
+      }
+      if ('content' in record) {
         record.content = prompt
-      } else if ('message' in record) {
+        replaced = true
+      }
+      if ('message' in record) {
         record.message = prompt
-      } else {
+        replaced = true
+      }
+      if (!replaced) {
         record.content = prompt
       }
       return cloned
@@ -465,8 +585,11 @@ function dedupeQuestions(questions: AdaptaRefinementQuestion[]): AdaptaRefinemen
 
 async function buildAdaptaRequest(prompt: string, options: AdaptaRequestOptions = {}): Promise<PreparedAdaptaRequest> {
   const startedAt = Date.now()
+  const promptMode = options.promptMode || config.adapta.promptMode
   adaptaLogger.info('request.preparation.started', adaptaLogData(options, {
     accountMode: options.account?.mode || 'default',
+    promptMode,
+    messageCount: options.messages?.length || 0,
     requestedChatMode: options.chatId ? 'specific' : options.newChat ? 'new' : 'reuse',
     hasProjectName: Boolean(options.projectName),
     hasFolderId: Boolean(options.folderId),
@@ -496,7 +619,16 @@ async function buildAdaptaRequest(prompt: string, options: AdaptaRequestOptions 
   adaptaLogger.info('session.headers_capture.completed', adaptaLogData(options))
   const projectFolderId = await resolveProjectFolderId(options)
   const remoteChatId = await resolveAdaptaRemoteChatId(options)
-  const prepared = prepareAdaptaPayload(captured.postData, prompt, remoteChatId)
+  const prepared = prepareAdaptaPayload(
+    captured.postData,
+    prompt,
+    remoteChatId,
+    newAdaptaMessageId(),
+    {
+      mode: promptMode,
+      messages: options.messages,
+    },
+  )
   const requestBody = projectFolderId
     ? applyProjectFolderToPayload(prepared.body, projectFolderId)
     : prepared.body

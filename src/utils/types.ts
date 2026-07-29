@@ -64,6 +64,7 @@ export interface OpenAIRequest {
     adapta_user_key?: string;
     adapta_project_name?: string;
     adapta_folder_id?: string;
+    adapta_prompt_mode?: 'full' | 'structured' | 'last_user';
     [key: string]: unknown;
   };
   tools?: FunctionToolDefinition[];
