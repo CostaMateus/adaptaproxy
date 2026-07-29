@@ -400,6 +400,7 @@ A exclusão remota depende do endpoint interno atual da Adapta. Se a UI mudar, o
 | `ADAPTA_MODEL_ID` | `GPT_55` | Modelo padrão; `/adaptaproxy/api/v1/models` lista as opções suportadas pela Adapta |
 | `ADAPTA_PROMPT_MODE` | `last_user` | Formato global do prompt: `structured`, `full` ou `last_user` |
 | `ADAPTA_PROJECT_NAME` | vazio | Nome opcional de um projeto/pasta; vazio cria os chats na raiz do menu `Chats` |
+| `ADAPTA_AUTO_DISCONNECT_OTHER_SESSIONS` | `true` | Preserva a sessão do proxy e desconecta as demais ao atingir o limite da Adapta |
 
 Para criar novos chats sempre dentro do projeto `nome_da_pasta`:
 
@@ -413,13 +414,9 @@ Com `ADAPTA_PROJECT_NAME=` (configuração padrão), o proxy remove qualquer `fo
 
 ### Limite de sessões da Adapta
 
-O servidor mantém uma sessão Chromium headless autenticada, que aparece como um dispositivo `X11` na Adapta. O Adaptaproxy detecta a tela `Muitas sessões ativas` como bloqueio e não a considera um login válido.
+O servidor mantém uma sessão Chromium headless autenticada, que aparece como um dispositivo `X11` na Adapta. Com `ADAPTA_AUTO_DISCONNECT_OTHER_SESSIONS=true`, o Adaptaproxy detecta a tela `Muitas sessões ativas`, identifica o ID da própria sessão, desconecta todas as demais e atualiza a sessão preservada antes de repetir o fluxo.
 
-Para recuperar uma conta que atingiu o limite:
-
-1. Pare instâncias antigas do Adaptaproxy.
-2. Na tela da Adapta, use `Desconectar todos os outros`.
-3. Inicie uma única instância do Adaptaproxy.
+A recuperação usa a API de sessões carregada pela própria Adapta. Se ela não estiver disponível, o proxy aciona o botão `Desconectar todos os outros` da tela como fallback. As recuperações ficam registradas nos eventos `multiple_sessions.recovery_started` e `multiple_sessions.recovery_completed`.
 
 Antes de abrir o Chromium, o servidor verifica se sua porta já está em uso. Isso evita que tentativas duplicadas de inicialização criem sessões adicionais.
 

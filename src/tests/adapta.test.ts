@@ -2,7 +2,11 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { app } from '../api/server.ts'
 import { getAdaptaChatSessionByKey, touchAdaptaChatSessionMapping } from '../core/chat-sessions.ts'
-import { getDefaultAdaptaChatRequest, isAdaptaMultipleSessionsText } from '../services/playwright.ts'
+import {
+  getDefaultAdaptaChatRequest,
+  getOtherAdaptaSessionIds,
+  isAdaptaMultipleSessionsText,
+} from '../services/playwright.ts'
 import {
   applyProjectFolderToPayload,
   extractRefinementQuestionsFromAdaptaPayload,
@@ -313,6 +317,20 @@ test('detects the Adapta multiple sessions blocking screen', () => {
     true,
   )
   assert.equal(isAdaptaMultipleSessionsText('Chats'), false)
+})
+
+test('preserves the proxy session when selecting Adapta sessions to disconnect', () => {
+  assert.deepEqual(
+    getOtherAdaptaSessionIds('proxy-session', [
+      'windows-session',
+      'proxy-session',
+      'old-proxy-session',
+      'windows-session',
+      '',
+    ]),
+    ['windows-session', 'old-proxy-session'],
+  )
+  assert.deepEqual(getOtherAdaptaSessionIds('', ['windows-session']), [])
 })
 
 test('persists Adapta session key to remote chat id mapping', () => {

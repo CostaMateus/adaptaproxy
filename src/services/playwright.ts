@@ -2,6 +2,7 @@ import { chromium, firefox, webkit, BrowserContext, Page, Request, Route } from 
 import path from 'path'
 import { spawn } from 'node:child_process'
 import { config } from '../core/config.ts'
+import { logger } from '../core/logger.ts'
 
 export type BrowserType = 'chromium' | 'firefox' | 'webkit' | 'chrome' | 'edge'
 
@@ -37,6 +38,7 @@ interface PlaywrightRuntime {
   currentProfileDir: string | null
   currentCredentials: { email: string, password: string } | null
   autoLoginPromise: Promise<void> | null
+  multipleSessionsRecoveryPromise: Promise<number> | null
   discoveryMutex: Mutex
   loginMutex: Mutex
   pageOperationMutex: Mutex
@@ -53,6 +55,7 @@ function createRuntime(): PlaywrightRuntime {
     currentProfileDir: null,
     currentCredentials: null,
     autoLoginPromise: null,
+    multipleSessionsRecoveryPromise: null,
     discoveryMutex: new Mutex(),
     loginMutex: new Mutex(),
     pageOperationMutex: new Mutex(),
@@ -88,9 +91,10 @@ export class Mutex {
 }
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+const sessionLogger = logger.child('adapta-session')
 
 const MULTIPLE_SESSIONS_ERROR =
-  'A Adapta bloqueou esta conta por excesso de sessoes ativas. Desconecte os outros dispositivos na plataforma e tente novamente.'
+  'A Adapta bloqueou esta conta por excesso de sessoes ativas e a recuperacao automatica falhou.'
 
 export function isAdaptaMultipleSessionsText(text: string): boolean {
   return /muitas sess(?:o|õ)es ativas/i.test(text) ||
@@ -104,10 +108,160 @@ async function hasMultipleSessionsBlock(page: Page): Promise<boolean> {
   return isAdaptaMultipleSessionsText(text)
 }
 
-async function assertNoMultipleSessionsBlock(page: Page | null): Promise<void> {
-  if (page && await hasMultipleSessionsBlock(page)) {
+export function getOtherAdaptaSessionIds(
+  currentSessionId: string,
+  sessionIds: string[],
+): string[] {
+  if (!currentSessionId) return []
+  return [...new Set(sessionIds)]
+    .filter(sessionId => sessionId && sessionId !== currentSessionId)
+}
+
+async function revokeOtherSessionsThroughClerk(page: Page): Promise<{
+  supported: boolean
+  revoked: number
+}> {
+  const inventory = await page.evaluate(async () => {
+    const clerk = (window as any).Clerk
+    if (!clerk) return { currentSessionId: '', sessionIds: [] as string[] }
+    if (clerk.loaded === false && typeof clerk.load === 'function') {
+      await clerk.load()
+    }
+
+    const currentSessionId = typeof clerk.session?.id === 'string'
+      ? clerk.session.id
+      : ''
+    const sessions = typeof clerk.user?.getSessions === 'function'
+      ? await clerk.user.getSessions()
+      : []
+
+    return {
+      currentSessionId,
+      sessionIds: Array.isArray(sessions)
+        ? sessions
+          .map((session: any) => session?.id)
+          .filter((sessionId: unknown): sessionId is string => typeof sessionId === 'string')
+        : [],
+    }
+  }).catch(() => ({ currentSessionId: '', sessionIds: [] as string[] }))
+
+  const otherSessionIds = getOtherAdaptaSessionIds(
+    inventory.currentSessionId,
+    inventory.sessionIds,
+  )
+  if (!inventory.currentSessionId) return { supported: false, revoked: 0 }
+
+  const revoked = await page.evaluate(async ({ currentSessionId, otherSessionIds }) => {
+    const clerk = (window as any).Clerk
+    if (!clerk || clerk.session?.id !== currentSessionId) {
+      throw new Error('Current Adapta session changed during recovery.')
+    }
+
+    const sessions = typeof clerk.user?.getSessions === 'function'
+      ? await clerk.user.getSessions()
+      : []
+    let revokedCount = 0
+
+    for (const sessionId of otherSessionIds) {
+      const session = Array.isArray(sessions)
+        ? sessions.find((candidate: any) => candidate?.id === sessionId)
+        : null
+      if (!session || session.id === currentSessionId || typeof session.revoke !== 'function') continue
+      await session.revoke()
+      revokedCount += 1
+    }
+
+    if (typeof clerk.session?.touch === 'function') {
+      await clerk.session.touch()
+    }
+    return revokedCount
+  }, {
+    currentSessionId: inventory.currentSessionId,
+    otherSessionIds,
+  })
+
+  return { supported: true, revoked }
+}
+
+async function disconnectOtherSessionsThroughUi(page: Page): Promise<boolean> {
+  const disconnectAllButton = page.getByRole('button', {
+    name: /Desconectar todos os outros|Disconnect all other/i,
+  })
+  if (await disconnectAllButton.count() !== 1) return false
+  await disconnectAllButton.click()
+  return true
+}
+
+async function waitForMultipleSessionsBlockToClear(page: Page): Promise<void> {
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    if (!(await hasMultipleSessionsBlock(page))) return
+    await sleep(500)
+    if (attempt === 1 || attempt === 3) {
+      await page.reload({
+        waitUntil: 'domcontentloaded',
+        timeout: config.timeouts.navigation,
+      }).catch(() => {})
+    }
+  }
+  throw new Error(MULTIPLE_SESSIONS_ERROR)
+}
+
+async function keepCurrentAdaptaSessionActive(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    const clerk = (window as any).Clerk
+    if (typeof clerk?.session?.touch === 'function') {
+      await clerk.session.touch()
+    }
+  }).catch(() => {})
+}
+
+async function recoverFromMultipleSessionsBlock(page: Page, accountKey?: string): Promise<number> {
+  const rt = runtime(accountKey)
+  if (!config.adapta.autoDisconnectOtherSessions) {
     throw new Error(MULTIPLE_SESSIONS_ERROR)
   }
+  if (!rt.multipleSessionsRecoveryPromise) {
+    rt.multipleSessionsRecoveryPromise = (async () => {
+      sessionLogger.warn('multiple_sessions.recovery_started', {
+        accountMode: accountKey ? 'account' : 'default',
+      })
+
+      let revoked = 0
+      let usedUiFallback = false
+      const clerkResult = await revokeOtherSessionsThroughClerk(page).catch(() => ({
+        supported: false,
+        revoked: 0,
+      }))
+      revoked = clerkResult.revoked
+
+      if (await hasMultipleSessionsBlock(page)) {
+        usedUiFallback = await disconnectOtherSessionsThroughUi(page).catch(() => false)
+      }
+
+      await waitForMultipleSessionsBlockToClear(page)
+      await keepCurrentAdaptaSessionActive(page)
+      rt.cachedAuthorizationHeader = null
+      rt.cachedProjectFolders = null
+      rt.cachedChatRequest = null
+
+      sessionLogger.info('multiple_sessions.recovery_completed', {
+        accountMode: accountKey ? 'account' : 'default',
+        revoked,
+        usedClerkApi: clerkResult.supported,
+        usedUiFallback,
+      })
+      return revoked
+    })().finally(() => {
+      rt.multipleSessionsRecoveryPromise = null
+    })
+  }
+  return rt.multipleSessionsRecoveryPromise
+}
+
+async function ensureNoMultipleSessionsBlock(page: Page | null, accountKey?: string): Promise<boolean> {
+  if (!page || !(await hasMultipleSessionsBlock(page))) return false
+  await recoverFromMultipleSessionsBlock(page, accountKey)
+  return true
 }
 
 function resolveConfiguredBrowserType(): BrowserType {
@@ -500,6 +654,7 @@ export async function initPlaywright(headless = true, browserType: BrowserType =
     console.warn(`[Playwright] Initial navigation failed: ${err.message}`)
   })
 
+  await ensureNoMultipleSessionsBlock(rt.activePage)
   if (!(await hasValidSession())) {
     console.warn('[Playwright] No valid Adapta session detected. Run `npm run login` and login manually.')
   }
@@ -511,6 +666,7 @@ export async function closePlaywright(): Promise<void> {
     rt.cachedChatRequest = null
     rt.cachedProjectFolders = null
     rt.cachedAuthorizationHeader = null
+    rt.multipleSessionsRecoveryPromise = null
     await rt.context?.close()
     rt.context = null
     rt.activePage = null
@@ -585,6 +741,7 @@ async function initPlaywrightForRuntime(
   }).catch(err => {
     console.warn(`[Playwright] Initial navigation failed for ${accountKey || 'default'}: ${err.message}`)
   })
+  await ensureNoMultipleSessionsBlock(rt.activePage, accountKey)
 }
 
 async function closePlaywrightAccount(accountKey?: string): Promise<void> {
@@ -592,6 +749,7 @@ async function closePlaywrightAccount(accountKey?: string): Promise<void> {
   rt.cachedChatRequest = null
   rt.cachedProjectFolders = null
   rt.cachedAuthorizationHeader = null
+  rt.multipleSessionsRecoveryPromise = null
   const loginContext = rt.loginContext
   rt.loginContext = null
   await loginContext?.close().catch(() => {})
@@ -637,7 +795,7 @@ async function runCredentialLogin(accountKey?: string): Promise<void> {
     rt.loginContext = loginContext
     await tryCredentialLogin(page, rt.currentCredentials.email, rt.currentCredentials.password)
       .catch(error => console.warn(`[Playwright] Credential login did not complete automatically: ${error.message}`))
-    await waitForManualLogin(page, config.timeouts.chat)
+    await waitForManualLogin(page, config.timeouts.chat, accountKey)
   } finally {
     const loginContext = rt.loginContext
     rt.loginContext = null
@@ -664,7 +822,8 @@ async function clearStoredAuthState(accountKey?: string): Promise<void> {
 async function ensureAuthenticatedSession(forceRefresh = false, accountKey?: string): Promise<void> {
   if (process.env.TEST_MOCK_PLAYWRIGHT) return
   const rt = runtime(accountKey)
-  await assertNoMultipleSessionsBlock(rt.activePage)
+  const recovered = await ensureNoMultipleSessionsBlock(rt.activePage, accountKey)
+  if (recovered && await hasValidSession(accountKey).catch(() => false)) return
   if (!forceRefresh && await hasValidSession(accountKey).catch(() => false)) return
 
   if (!rt.autoLoginPromise) {
@@ -713,14 +872,14 @@ export async function getAdaptaSessionHeaders(accountKey?: string): Promise<Reco
   }
   let page = runtime(accountKey).activePage
   if (!page) throw new Error('Playwright not initialized')
-  await assertNoMultipleSessionsBlock(page)
+  await ensureNoMultipleSessionsBlock(page, accountKey)
 
   if (!(await hasValidSession(accountKey))) {
     await ensureAuthenticatedSession(false, accountKey)
   }
   page = runtime(accountKey).activePage
   if (!page) throw new Error('Playwright not initialized')
-  await assertNoMultipleSessionsBlock(page)
+  await ensureNoMultipleSessionsBlock(page, accountKey)
 
   const cookieHeader = (await page.context().cookies(config.adapta.baseUrl))
     .map(cookie => `${cookie.name}=${cookie.value}`)
@@ -816,10 +975,10 @@ export async function launchManualLogin(
   return { context: loginContext, page }
 }
 
-export async function waitForManualLogin(page: Page, timeoutMs = 0): Promise<void> {
+export async function waitForManualLogin(page: Page, timeoutMs = 0, accountKey?: string): Promise<void> {
   const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : 0
   while (true) {
-    await assertNoMultipleSessionsBlock(page)
+    await ensureNoMultipleSessionsBlock(page, accountKey)
     const url = page.url()
     if (!url.includes('/sign-in') && !url.includes('/login') && await hasAuthState(page)) {
       return
@@ -860,7 +1019,7 @@ export async function loginWithCredentialsForAccount(options: {
     rt.loginContext = loginContext
     await tryCredentialLogin(page, options.email, options.password)
       .catch(error => console.warn(`[Playwright] Credential login did not complete automatically: ${error.message}`))
-    await waitForManualLogin(page, config.timeouts.chat)
+    await waitForManualLogin(page, config.timeouts.chat, options.accountKey)
   } finally {
     const loginContext = rt.loginContext
     rt.loginContext = null
